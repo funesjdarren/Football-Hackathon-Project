@@ -17,12 +17,20 @@ Then (Python 3.10+):
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 az login
+
+If using powershell run .venv/Scripts/Activate.ps1
 ```
 
 ## Run
-
+Match gui waits for data contained in the .jsonl file so it can be run first.
 ```
-python3 -u generate_data.py | python3 read_stream.py
+### For the live production run  
+python3 scripts/match_gui.py
+python3 -u scripts/generate_data.py | scripts/python3 read_stream.py  
+
+### For the test run  
+python3 scripts/match_gui.py
+python3 scripts/generate_data.py
 ```
 
 Ctrl-C to stop. Afterwards, `git restore football_data/match_data.json`.
