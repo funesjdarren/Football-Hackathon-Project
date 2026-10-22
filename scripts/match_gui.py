@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import sys
 import tkinter as tk
 from tkinter import ttk
 
@@ -35,8 +36,11 @@ class FootballMatchGUI:
         "football_data", "commentary.jsonl"
     )
 
+    self.state_file_path = os.path.join("football_data", "state_of_game.jsonl")
+
     self.file_pos = 0
     self.comm_file_pos = 0
+    self.state_file_pos = 0
     self.current_payload = None
 
     self._build_header()
@@ -100,7 +104,7 @@ class FootballMatchGUI:
     self.draw_pitch_markings()
 
   def _build_sidebar(self):
-    """Sidebar containing Live Stats, Tactical Foil Card, and AI Commentary."""
+    """Sidebar containing Live Stats, Tactical Foil Card, State of the Game, and AI Commentary."""
     self.sidebar = tk.Frame(self.root, bg="#1e293b", width=400)
     self.sidebar.pack(
         side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(0, 20), pady=15
@@ -179,7 +183,55 @@ class FootballMatchGUI:
     )
     self.crowd_lbl.pack(anchor="w")
 
-    # 3. Newcomer AI Commentary Feed
+    # 3. State of the Game (color commentator, latest take only)
+    self.state_box = tk.LabelFrame(
+        self.sidebar,
+        text=" State of the Game ",
+        font=("Segoe UI", 11, "bold"),
+        fg="#38bdf8",
+        bg="#1e293b",
+        padx=10,
+        pady=8,
+    )
+    self.state_box.pack(fill=tk.X, padx=12, pady=5)
+
+    state_body = tk.Frame(self.state_box, bg="#1e293b")
+    state_body.pack(fill=tk.X)
+    self.state_text = tk.Text(
+        state_body,
+        width=1,
+        height=8,
+        bg="#0f172a",
+        fg="#fde68a",
+        font=("Segoe UI", 9),
+        wrap=tk.WORD,
+        relief=tk.FLAT,
+    )
+    state_scroll = ttk.Scrollbar(
+        state_body, orient=tk.VERTICAL, command=self.state_text.yview
+    )
+    self.state_text.configure(yscrollcommand=state_scroll.set)
+    state_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+    self.state_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    self.state_text.insert(
+        tk.END, "Waiting for the first State of the Game update..."
+    )
+
+    self.state_next_lbl = tk.Label(
+        self.state_box,
+        text=(
+            "Updates every 15 minutes, at half-time and full-time, and after"
+            " goals or red cards."
+        ),
+        font=("Segoe UI", 8),
+        fg="#94a3b8",
+        bg="#1e293b",
+        wraplength=340,
+        justify=tk.LEFT,
+    )
+    self.state_next_lbl.pack(anchor="w", pady=(4, 0))
+
+    # 4. Newcomer AI Commentary Feed
     comm_box = tk.LabelFrame(
         self.sidebar,
         text=" Live AI Commentary (Casual Fan Companion) ",
@@ -362,6 +414,56 @@ class FootballMatchGUI:
           tags="dynamic_element",
       )
 
+  # --- STATE OF THE GAME PANEL ---
+
+  def read_complete_lines(self, path, pos):
+    """Returns complete new lines after byte offset pos, and the new offset.
+
+    A half-written last line is left for the next poll, so a take is never lost.
+    """
+    try:
+      size = os.path.getsize(path)
+    except OSError:
+      return [], pos
+    if size < pos:
+      pos = 0
+    if size == pos:
+      return [], pos
+    with open(path, "rb") as f:
+      f.seek(pos)
+      data = f.read(size - pos)
+    cut = data.rfind(b"\n")
+    if cut < 0:
+      return [], pos
+    text = data[: cut + 1].decode("utf-8", "replace")
+    return [line.strip() for line in text.splitlines() if line.strip()], pos + cut + 1
+
+  def show_state_take(self, entry):
+    """Replaces the panel with the newest State of the Game take."""
+    label = entry.get("label")
+    self.state_box.config(
+        text=f" State of the Game  ⏱ {entry.get('clock', '')}"
+        + (f" · {label} " if label else " ")
+    )
+    self.state_text.delete("1.0", tk.END)
+    self.state_text.insert(tk.END, entry["text"])
+    self.state_text.see("1.0")
+    self.state_next_lbl.config(text=entry.get("next") or "")
+
+  def poll_state_feed(self):
+    """Tails state_of_game.jsonl and shows only its newest valid entry."""
+    lines, self.state_file_pos = self.read_complete_lines(
+        self.state_file_path, self.state_file_pos
+    )
+    for line in reversed(lines):
+      try:
+        entry = json.loads(line)
+      except json.JSONDecodeError:
+        continue
+      if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+        self.show_state_take(entry)
+        break
+
   # --- REAL-TIME POLLING ---
 
   def poll_data_feed(self):
@@ -403,6 +505,12 @@ class FootballMatchGUI:
               self.comm_text.see(tk.END)
             except json.JSONDecodeError:
               pass
+
+    # Poll State of the Game (a bad line must never stop this loop)
+    try:
+      self.poll_state_feed()
+    except Exception as exc:
+      print(f"State of the Game panel error: {exc!r}", file=sys.stderr)
 
     self.root.after(200, self.poll_data_feed)
 
