@@ -1,5 +1,6 @@
 .env
 .venv/
 __pycache__/
-football_data/match_data.json
-football_data/state_of_game.jsonl
+football_data/*.jsonl
+football_data/*.json
+scripts/football_data/

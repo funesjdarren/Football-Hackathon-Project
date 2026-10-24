@@ -4,6 +4,7 @@ import os
 import sys
 import tkinter as tk
 from tkinter import ttk
+import paths
 
 # Window configuration
 WINDOW_WIDTH = 1260
@@ -27,16 +28,13 @@ class FootballMatchGUI:
 
   def __init__(self, root):
     self.root = root
-    self.root.title("Inside the Game — Live Tactical Commentary & Visualizer")
+    self.root.title("Live Tactical Commentary & Visualizer")
     self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
     self.root.configure(bg="#0f172a")
 
-    self.match_file_path = os.path.join("football_data", "match_data.jsonl")
-    self.commentary_file_path = os.path.join(
-        "football_data", "commentary.jsonl"
-    )
-
-    self.state_file_path = os.path.join("football_data", "state_of_game.jsonl")
+    self.match_file_path = os.path.join(paths.DATA_DIR, "match_data.jsonl")
+    self.commentary_file_path = os.path.join(paths.DATA_DIR, "commentary.jsonl")
+    self.state_file_path = os.path.join(paths.DATA_DIR, "state_of_game.jsonl")
 
     self.file_pos = 0
     self.comm_file_pos = 0

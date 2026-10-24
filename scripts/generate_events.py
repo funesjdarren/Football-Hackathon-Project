@@ -4,9 +4,14 @@ import os
 import random
 import sys
 import time
+import paths
 from tracking_engine import TacticalTrackingEngine
 
 SYNTHETIC_TEAMS = ["FC Alpha", "Beta United"]
+TEAM_CODES = {"FC Alpha": "FCA", "Beta United": "BTU"}
+
+# Invented names only: the clubs and players are fictional, so no real
+# footballer can be matched by initial and surname
 FIRST_NAMES = [
     "Liam",
     "Noah",
@@ -16,26 +21,44 @@ FIRST_NAMES = [
     "William",
     "Lucas",
     "Kai",
-    "Declan",
-    "Cole",
+    "Arlo",
+    "Milo",
 ]
 LAST_NAMES = [
-    "Smith",
-    "Johnson",
-    "Brown",
-    "Garcia",
-    "Miller",
-    "Davis",
-    "Saka",
-    "Rice",
-    "Foden",
-    "Palmer",
+    "Ashgrove",
+    "Bellmont",
+    "Corvane",
+    "Dunholt",
+    "Elswick",
+    "Fairmoor",
+    "Garrow",
+    "Halvard",
+    "Iverly",
+    "Jarrell",
+    "Kestley",
+    "Lorrimer",
+    "Merrivale",
+    "Northam",
+    "Orwin",
+    "Penhale",
+    "Quillon",
+    "Rendell",
+    "Stanmore",
+    "Tarrow",
+    "Ulvane",
+    "Varden",
+    "Westcott",
+    "Yarrowby",
+    "Zellick",
 ]
 
 
-def generate_squad(team_name):
+def generate_squad(team_name, surnames):
+  """11 players with the given unique surnames and unique shirt numbers."""
   squad = []
   pid = 100
+  names = iter(surnames)
+  numbers = iter([1] + random.sample(range(2, 31), 10))  # keeper wears 1
   layout = [
       ("Goalkeeper", "GK", 1),
       ("Defender", "DEF", 4),
@@ -46,13 +69,11 @@ def generate_squad(team_name):
     for _ in range(count):
       pid += 1
       squad.append({
-          "id": f"{team_name[:3].upper()}-{pid}",
-          "name": (
-              f"{random.choice(FIRST_NAMES)[0]}. {random.choice(LAST_NAMES)}"
-          ),
+          "id": f"{TEAM_CODES[team_name]}-{pid}",
+          "name": f"{random.choice(FIRST_NAMES)[0]}. {next(names)}",
           "role": role,
           "pos_key": pos_key,
-          "shirt_number": random.randint(1, 99),
+          "shirt_number": next(numbers),
           "cards": {"yellow": 0, "red": 0},
       })
   return squad
@@ -60,9 +81,10 @@ def generate_squad(team_name):
 
 def run_broadcast_soccer_stream():
   home_team, away_team = SYNTHETIC_TEAMS[0], SYNTHETIC_TEAMS[1]
+  surnames = random.sample(LAST_NAMES, 22)  # no two players share a surname
   rosters = {
-      home_team: generate_squad(home_team),
-      away_team: generate_squad(away_team),
+      home_team: generate_squad(home_team, surnames[:11]),
+      away_team: generate_squad(away_team, surnames[11:]),
   }
 
   tracking_engine = TacticalTrackingEngine(
@@ -104,8 +126,8 @@ def run_broadcast_soccer_stream():
   p2_stoppage_set = False
   event_counter = 1
 
-  os.makedirs("football_data", exist_ok=True)
-  save_path = os.path.join("football_data", "match_data.jsonl")
+  os.makedirs(paths.DATA_DIR, exist_ok=True)
+  save_path = os.path.join(paths.DATA_DIR, "match_data.jsonl")
 
   print(
       f"=== BROADCAST STREAM INITIATED: {home_team} vs {away_team} ===",

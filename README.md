@@ -4,14 +4,7 @@ Streams a simulated match to two Foundry agents: a play-by-play "Casual Fan Comp
 
 ## Setup
 
-Create a `.env` file in the repo root:
-
-```
-PROJECT_ENDPOINT="your_project_endpoint"
-AGENT_NAME="your_agent_name"
-# Written for you by scripts/setup_state_of_game_agent.py
-STATE_OF_GAME_AGENT_NAME="MS-Football-Hackathon-State-of-Game"
-```
+Copy `.env.example` to `.env` in the repo root and fill in your Foundry project endpoint. `.env` is git-ignored; never commit it.
 
 Then (Python 3.10+):
 
@@ -27,22 +20,22 @@ If using powershell run .venv/Scripts/Activate.ps1
 The setup script creates the State of the Game agent once (same model and reasoning as `AGENT_NAME`, no web search) and adds `STATE_OF_GAME_AGENT_NAME` to your `.env`. It is safe to re-run.
 
 ## Run
-Run every command from the repo root, with the `.venv` activated in each terminal: the scripts read and write `football_data/` relative to where they start.
+Each command below runs in **its own terminal** (they keep running), with the `.venv` activated. Run them from the repo root: `read_stream.py` still writes `football_data/` relative to where it starts; the other scripts find the repo's `football_data/` from any folder.
 
 Match gui waits for data contained in the .jsonl files so it can be run first. Start `state_of_game.py` before the match and wait for its `Watching ...` line, so it catches kick-off.
 ```
 ### For the live production run
-python scripts/match_gui.py
-python scripts/state_of_game.py
-python -u scripts/generate_events.py | python scripts/read_stream.py
+Terminal 1:  python scripts/match_gui.py
+Terminal 2:  python scripts/state_of_game.py
+Terminal 3:  python -u scripts/generate_events.py | python scripts/read_stream.py
 
 ### For the test run (no Azure calls)
-python scripts/match_gui.py
-python scripts/state_of_game.py --dry-run
-python scripts/generate_events.py
+Terminal 1:  python scripts/match_gui.py
+Terminal 2:  python scripts/state_of_game.py --dry-run
+Terminal 3:  python scripts/generate_events.py
 ```
 
-Ctrl-C to stop. Afterwards, `git restore football_data/match_data.jsonl`.
+Ctrl-C in terminals 2 and 3 and close the GUI window to stop. Match data in `football_data/` is git-ignored, so there is nothing to clean up.
 
 ## State of the Game commentator
 
