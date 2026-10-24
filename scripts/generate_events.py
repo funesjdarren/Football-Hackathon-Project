@@ -8,7 +8,7 @@ import secrets
 import sys
 import time
 import paths
-from tracking_engine import TacticalTrackingEngine
+from tracking_engine import PITCH_LENGTH, TacticalTrackingEngine
 
 SYNTHETIC_TEAMS = ["FC Alpha", "Beta United"]
 TEAM_CODES = {"FC Alpha": "FCA", "Beta United": "BTU"}
@@ -16,6 +16,19 @@ TEAM_CODES = {"FC Alpha": "FCA", "Beta United": "BTU"}
 HALF_END_MIN = {1: 45, 2: 90}
 STOPPAGE_MIN = {1: (1, 4), 2: (2, 6)}  # announced added time per half
 MARKER_TYPES = ("KICK_OFF", "HALF_TIME", "SECOND_HALF", "FULL_TIME")
+SHOT_REASONS = {
+    "Goal": "Goal",
+    "Saved": "Shot Saved",
+    "Missed": "Shot Missed",
+    "Blocked": "Shot Blocked",
+}
+
+# Invented venues, like the clubs and players
+VENUES = [
+    {"name": "Brightwater Bowl", "city": "Eastmere", "capacity": 38500},
+    {"name": "Kestrel Ground", "city": "Wexbury", "capacity": 27200},
+    {"name": "Larkspur Stadium", "city": "Thornhaven", "capacity": 45800},
+]
 
 # Invented names only: the clubs and players are fictional, so no real
 # footballer can be matched by initial and surname
@@ -105,7 +118,45 @@ def kick_off_taker(tracking_engine, roster):
   )
 
 
-def simulate(rng):
+def rel_x(direction, x):
+  """Distance up the pitch from the attacking team's own goal line."""
+  return x if direction == 1 else PITCH_LENGTH - x
+
+
+def kick_off_metadata(match_id, rosters, tracking_engine, referee, rng):
+  """Match details carried by the KICK_OFF packet (never a line of its own)."""
+  venue = rng.choice(VENUES)
+  teams = {}
+  for side, team in zip(("home", "away"), SYNTHETIC_TEAMS):
+    teams[side] = {
+        "name": team,
+        "team_id": TEAM_CODES[team],
+        "formation": "4-3-3",
+        "attacking_direction": tracking_engine.direction[team],
+        "lineup": [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "shirt_number": p["shirt_number"],
+                "role": p["role"],
+                "pos_key": p["pos_key"],
+                "tactical_role": tracking_engine.players[p["id"]]["role"],
+            }
+            for p in rosters[team]
+        ],
+    }
+  return {
+      "match_id": match_id,
+      "generator": "v2",
+      "competition": "Synthetic Friendly",
+      "venue": dict(venue),
+      "attendance": rng.randint(venue["capacity"] * 6 // 10, venue["capacity"]),
+      "referee": {"id": referee["id"], "name": referee["name"]},
+      "teams": teams,
+  }
+
+
+def simulate(rng, match_id="syn-unseeded"):
   """Yields one full match of packets, deterministic for a given rng.
 
   Packets are independent copies, so they can be collected safely. The
@@ -122,6 +173,13 @@ def simulate(rng):
   tracking_engine = TacticalTrackingEngine(
       home_team, away_team, rosters[home_team], rosters[away_team], rng=rng
   )
+  direction = tracking_engine.direction
+  by_id = {p["id"]: p for roster in rosters.values() for p in roster}
+  metadata = kick_off_metadata(match_id, rosters, tracking_engine, referee, rng)
+
+  def roster_player(engine_player):
+    """The roster entry (the packet's actor shape) for an engine player."""
+    return by_id[engine_player["id"]]
 
   score = {home_team: 0, away_team: 0}
   live_stats = {
@@ -157,9 +215,12 @@ def simulate(rng):
   stoppage = None
   whistle = "KICK_OFF"
   event_counter = 0
+  possession_id, last_possession = 1, None
 
   while True:
     event_counter += 1
+    event_team, reason = None, None
+    recipient_id = challenger_id = offender_id = None
     half_end = HALF_END_MIN[period] * 60
     if stoppage is None and clock_s >= half_end:
       stoppage = rng.randint(*STOPPAGE_MIN[period])
@@ -177,6 +238,8 @@ def simulate(rng):
       kicking_off = whistle in ("KICK_OFF", "SECOND_HALF")
       if kicking_off:
         phase = "Midfield Progression"
+      if whistle == "SECOND_HALF":
+        reason = "Kick-off"  # the away team takes over for the 2nd half
       defensive_block = "Mid Block"
       defensive_line_height_m = 35.0
       closest_defender_dist_m = 9.15
@@ -195,12 +258,15 @@ def simulate(rng):
       )
       next_actor = current_actor
     else:
-      # 1. Determine Pitch Phase & Defensive Shape
-      if ball_x < 35:
+      # 1. Determine Pitch Phase & Defensive Shape, from where the ball is
+      # relative to the team on the ball (each team attacks its own goal)
+      d = direction[attacking_team]
+      rx = rel_x(d, ball_x)
+      if rx < 35:
         phase = "Build-Up (Defensive Third)"
         defensive_block = "High Press"
         defensive_line_height_m = round(rng.uniform(45.0, 55.0), 1)
-      elif ball_x < 75:
+      elif rx < 75:
         phase = "Midfield Progression"
         defensive_block = rng.choice(["Mid Block", "Compact Central Shape"])
         defensive_line_height_m = round(rng.uniform(30.0, 42.0), 1)
@@ -210,7 +276,7 @@ def simulate(rng):
         defensive_line_height_m = round(rng.uniform(12.0, 22.0), 1)
 
       # 2. Event Selection
-      if ball_x >= 75:
+      if rx >= 75:
         event_type = rng.choices(
             ["Shot", "Pass", "Dribble", "Tackle", "Foul"],
             weights=[25, 40, 15, 15, 5],
@@ -226,29 +292,45 @@ def simulate(rng):
 
       start_x, start_y = ball_x, ball_y
       actor = current_actor
+      event_team = attacking_team
       actor_speed_kmh = round(rng.uniform(12.0, 26.5), 1)
       closest_defender_dist_m = round(rng.uniform(0.8, 6.5), 1)
+
+      # The tracking frame shows the moment the event starts, with the
+      # actor on the ball; the picks below use these positions
+      player_tracking_frame = tracking_engine.update_frame(
+          ball_x=ball_x,
+          ball_y=ball_y,
+          possession_team=attacking_team,
+          active_actor_id=current_actor["id"],
+          defensive_block=defensive_block,
+      )
 
       # 3. Simulate Event Mechanics & Movement
       if event_type == "Pass":
         live_stats[attacking_team]["passes_attempted"] += 1
-        end_x = min(118.0, max(2.0, start_x + rng.uniform(-8, 28)))
+        end_x = min(118.0, max(2.0, start_x + d * rng.uniform(-8, 28)))
         end_y = min(78.0, max(2.0, start_y + rng.uniform(-22, 22)))
 
         outcome = "Complete" if rng.random() > 0.18 else "Incomplete"
-        recipient = rng.choice(
-            [p for p in rosters[attacking_team] if p["id"] != current_actor["id"]]
-        )
+        recipient = None
 
         if outcome == "Complete":
           live_stats[attacking_team]["passes_completed"] += 1
           ball_x, ball_y = round(end_x, 1), round(end_y, 1)
+          recipient = roster_player(tracking_engine.nearest(
+              attacking_team, end_x, end_y, exclude=(current_actor["id"],)
+          )[0])
+          recipient_id = recipient["id"]
           next_actor = recipient
         else:
           crowd_intensity += 15
           attacking_team, defending_team = defending_team, attacking_team
           ball_x, ball_y = round(end_x, 1), round(end_y, 1)
-          next_actor = rng.choice(rosters[attacking_team])
+          next_actor = roster_player(
+              tracking_engine.nearest(attacking_team, end_x, end_y)[0]
+          )
+          reason = "Interception"
 
         payload_details = {
             "coordinates": {
@@ -256,7 +338,7 @@ def simulate(rng):
                 "end": [round(end_x, 1), round(end_y, 1)],
             },
             "outcome": outcome,
-            "recipient": recipient if outcome == "Complete" else None,
+            "recipient": recipient,
             "pass_speed_kmh": round(rng.uniform(35.0, 75.0), 1),
         }
 
@@ -290,13 +372,20 @@ def simulate(rng):
         }
 
         attacking_team, defending_team = defending_team, attacking_team
-        ball_x, ball_y = 10.0, 40.0
-        next_actor = next(
-            p for p in rosters[attacking_team] if p["pos_key"] == "GK"
-        )
+        reason = SHOT_REASONS[outcome]
+        keeper = tracking_engine.keeper(attacking_team)  # restarts from his goal
+        ball_x, ball_y = keeper["x"], keeper["y"]
+        next_actor = roster_player(keeper)
 
       elif event_type in ["Tackle", "Foul"]:
-        opponent = rng.choice(rosters[defending_team])
+        if event_type == "Tackle":
+          opponent = roster_player(tracking_engine.nearest(
+              defending_team, ball_x, ball_y, outfield=True
+          )[0])
+          challenger_id = opponent["id"]
+        else:
+          opponent = rng.choice(rosters[defending_team])
+          offender_id = opponent["id"]
         won_ball = rng.random() > 0.50
 
         if event_type == "Foul":
@@ -327,13 +416,14 @@ def simulate(rng):
           }
           if won_ball:
             attacking_team, defending_team = defending_team, attacking_team
+            reason = "Tackle"
             next_actor = opponent
           else:
             next_actor = current_actor
 
       else:  # Dribble
         actor_speed_kmh = round(rng.uniform(22.0, 32.5), 1)
-        end_x = min(118.0, max(2.0, start_x + rng.uniform(3, 14)))
+        end_x = min(118.0, max(2.0, start_x + d * rng.uniform(3, 14)))
         end_y = min(78.0, max(2.0, start_y + rng.uniform(-8, 8)))
         payload_details = {
             "coordinates": {
@@ -345,14 +435,20 @@ def simulate(rng):
         ball_x, ball_y = round(end_x, 1), round(end_y, 1)
         next_actor = current_actor
 
-      # 4. Synchronize Tracking Frame with Resolved Position
-      player_tracking_frame = tracking_engine.update_frame(
-          ball_x=ball_x,
-          ball_y=ball_y,
-          possession_team=attacking_team,
-          active_actor_id=current_actor["id"],
-          defensive_block=defensive_block,
-      )
+    # Possession chain: possession_team/defending_team keep their v1 meaning
+    # (the team on the ball AFTER the event); from_team is who started it
+    from_team = event_team or last_possession
+    changed = from_team is not None and from_team != attacking_team
+    if changed:
+      possession_id += 1
+    possession_change = {
+        "changed": changed,
+        "from_team": from_team,
+        "to_team": attacking_team,
+        "reason": reason if changed else None,
+        "possession_id": possession_id,
+    }
+    last_possession = attacking_team
 
     # 5. Calculate Possession %
     total_passes = (
@@ -369,6 +465,7 @@ def simulate(rng):
     # 6. Form Broadcast Payload
     payload = {
         "event_id": f"syn-ev-{event_counter:06d}",
+        "match_id": match_id,
         "broadcast_metadata": {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "clock": {
@@ -378,8 +475,16 @@ def simulate(rng):
                 "second": second,
             },
             "scoreboard": {
-                "home": {"team": home_team, "score": score[home_team]},
-                "away": {"team": away_team, "score": score[away_team]},
+                "home": {
+                    "team": home_team,
+                    "score": score[home_team],
+                    "team_id": TEAM_CODES[home_team],
+                },
+                "away": {
+                    "team": away_team,
+                    "score": score[away_team],
+                    "team_id": TEAM_CODES[away_team],
+                },
             },
             "var_status": var_status,
             "crowd_intensity_index": crowd_intensity,
@@ -392,12 +497,21 @@ def simulate(rng):
             "defensive_structure": defensive_block,
             "defensive_line_height_meters": defensive_line_height_m,
             "pressure_distance_to_ball_meters": closest_defender_dist_m,
+            "possession_team_id": TEAM_CODES[attacking_team],
+            "defending_team_id": TEAM_CODES[defending_team],
         },
+        "possession_change": possession_change,
         "event": {
             "type": event_type,
             "actor": actor,
             "actor_speed_kmh": actor_speed_kmh,
             "details": payload_details,
+            "team": event_team,
+            "team_id": TEAM_CODES.get(event_team),
+            "restart": None,
+            "recipient_id": recipient_id,
+            "challenger_id": challenger_id,
+            "offender_id": offender_id,
         },
         "live_match_stats": {
             "possession_pct": possession_share,
@@ -409,6 +523,8 @@ def simulate(rng):
             "players": player_tracking_frame,
         },
     }
+    if whistle == "KICK_OFF":
+      payload["match_metadata"] = metadata
 
     current_actor = next_actor
     yield copy.deepcopy(payload)  # stats and cards keep changing after this
@@ -471,7 +587,7 @@ def main():
       file=sys.stderr,
   )
 
-  for packet in simulate(random.Random(seed)):
+  for packet in simulate(random.Random(seed), match_id=f"syn-{seed:06d}"):
     line = json.dumps(packet)
     # Append to the file first, then stdout, so the file is never behind the pipe
     with open(args.out, "a") as f:

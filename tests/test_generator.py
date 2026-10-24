@@ -64,7 +64,7 @@ V1_PATHS = [
 ]
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=8)  # a cached match holds about 20 MB
 def match(seed):
   return tuple(g.simulate(random.Random(seed)))
 
@@ -161,6 +161,69 @@ def test_whistles_and_stoppage(seed):
     assert p["event"]["actor_speed_kmh"] == 0.0
     if i:
       assert p["live_match_stats"] == packets[i - 1]["live_match_stats"]
+
+
+def test_kick_off_metadata():
+  packets = match(1)
+  meta = packets[0]["match_metadata"]
+  assert all("match_metadata" not in p for p in packets[1:])
+  lineup_ids = set()
+  for side in ("home", "away"):
+    lineup = meta["teams"][side]["lineup"]
+    assert len({player["id"] for player in lineup}) == 11
+    lineup_ids |= {player["id"] for player in lineup}
+  first_frame = packets[0]["player_tracking"]["players"]
+  assert lineup_ids == {player["player_id"] for player in first_frame}
+  assert {p["match_id"] for p in packets} == {meta["match_id"]}
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_ids_and_possession_chain(seed):
+  previous_id = 1
+  for p in match(seed):
+    chain = p["possession_change"]
+    assert chain["to_team"] == p["tactical_context"]["possession_team"]
+    assert chain["changed"] == (
+        chain["from_team"] is not None and chain["from_team"] != chain["to_team"]
+    )
+    assert chain["possession_id"] == previous_id + chain["changed"]
+    previous_id = chain["possession_id"]
+    ev = p["event"]
+    if ev["type"] in g.MARKER_TYPES:
+      assert ev["team"] is None
+    else:
+      assert ev["team"] == chain["from_team"]
+      assert ev["team_id"] == g.TEAM_CODES[ev["team"]]
+      assert ev["actor"]["id"].startswith(ev["team_id"])
+    for side in ("home", "away"):
+      board = p["broadcast_metadata"]["scoreboard"][side]
+      assert board["team_id"] == g.TEAM_CODES[board["team"]]
+
+
+@pytest.mark.parametrize("seed", range(50))
+def test_each_team_attacks_its_own_goal(seed):
+  home = g.SYNTHETIC_TEAMS[0]
+  for p in g.simulate(random.Random(seed)):  # streamed, not cached
+    ev = p["event"]
+    attacking = ev["type"] == "Shot" or (
+        p["tactical_context"]["phase_of_play"] == "Final Third Attack"
+    )
+    if ev["team"] and attacking:
+      x = ev["details"]["coordinates"]["start"][0]
+      assert x >= 75.0 if ev["team"] == home else x <= 45.0, (ev["type"], ev["team"], x)
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_frame_is_the_event_instant(seed):
+  for p in match(seed):
+    ev = p["event"]
+    if ev["type"] in g.MARKER_TYPES:
+      continue
+    actor = next(
+        pl for pl in p["player_tracking"]["players"] if pl["player_id"] == ev["actor"]["id"]
+    )
+    start = ev["details"]["coordinates"]["start"]
+    assert math.hypot(actor["x"] - start[0], actor["y"] - start[1]) <= 0.11
 
 
 @pytest.mark.parametrize("seed", range(5))

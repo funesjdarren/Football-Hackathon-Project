@@ -1,0 +1,54 @@
+# Match packet data dictionary
+
+`scripts/generate_events.py` streams one synthetic match as JSON packets. This page describes what each packet contains and the rules every consumer (`read_stream.py`, `state_of_game.py`, `match_gui.py`) can rely on.
+
+## Stream rules
+
+- One complete packet per line: ASCII JSON, appended to `football_data/match_data.jsonl` (or `--out PATH`) **first**, then printed to stdout. Readable status lines go to stderr only.
+- The file is append-only and never truncated. There is no header line: match details travel on the `KICK_OFF` packet.
+- `python scripts/generate_events.py [--seed N] [--speed P] [--out PATH]`. The seed is printed at start; the same seed and code give the same packets apart from `timestamp_utc`. `--speed` is packets per real second (default 1; 0 = no delay).
+
+## Clock and periods
+
+- `period` is 1 or 2. Minutes are absolute: the second half restarts at 45:00 and added time keeps counting (47:12, 93:00).
+- `display_time` is `MM:SS`, plus ` +N` once added time is announced (from 45:00 in the first half, 90:00 in the second) until that half ends. N is 1–4 in the first half and 2–6 in the second.
+- `(period, minute*60 + second)` never goes backwards within a match.
+- Four whistle packets per match, in this order: `KICK_OFF` (period 1, 00:00), `HALF_TIME` (period 1, (45+N):00 ` +N`), `SECOND_HALF` (period 2, 45:00), `FULL_TIME` (period 2, (90+N):00 ` +N`). They have the full packet shape, the referee as actor, a null `commentary_trigger`, crowd below 80, and unchanged stats.
+- Teams don't switch ends: FC Alpha (`FCA`) attacks toward x = 120, Beta United (`BTU`) toward x = 0. The pitch is 120 x 80 m.
+
+## Fields
+
+| Field | Meaning |
+|---|---|
+| `event_id` | `syn-ev-000001`, ... unique within a match |
+| `match_id` | `syn-<seed>`, the same on every packet of a match |
+| `broadcast_metadata.timestamp_utc` | Wall-clock UTC time the packet was produced (timezone-aware ISO 8601, never seeded) |
+| `broadcast_metadata.clock` | `period`, `minute`, `second`, `display_time` (see above) |
+| `broadcast_metadata.scoreboard.home/away` | `team`, `score`, `team_id`. On a `GOAL_SCORED` packet the score already includes that goal |
+| `broadcast_metadata.var_status` | `Inactive` or `Checking Possible Offside` (a goal always stands) |
+| `broadcast_metadata.crowd_intensity_index` | 0–100. `read_stream.py` calls its agent at 80 or above |
+| `broadcast_metadata.commentary_trigger` | `null`, `GOAL_SCORED`, `BOOKING_YELLOW` or `SENDING_OFF_RED` |
+| `tactical_context.phase_of_play` | `Build-Up (Defensive Third)`, `Midfield Progression` or `Final Third Attack`, measured from the goal of the team that starts the event |
+| `tactical_context.possession_team` / `defending_team` | The team on the ball **after** the event, and the other team. `*_team_id` give their codes |
+| `tactical_context.defensive_structure` | `High Press`, `Mid Block`, `Compact Central Shape` or `Low Block (Deep Defense)` |
+| `tactical_context.defensive_line_height_meters`, `pressure_distance_to_ball_meters` | Shape of the team defending the event |
+| `possession_change` | `changed`, `from_team` (who started the event), `to_team` (always `possession_team`), `reason` (`Interception`, `Tackle`, `Goal`, `Shot Saved`, `Shot Missed`, `Shot Blocked`, `Kick-off`; null when unchanged), `possession_id` (starts at 1, +1 per change) |
+| `event.type` | `Pass`, `Shot`, `Dribble`, `Tackle`, `Foul`, or a whistle type |
+| `event.actor` | The player starting the event: `id`, `name`, `role`, `pos_key`, `shirt_number`, `cards`. On whistles it is the referee (`role` `Referee`, `shirt_number` null) |
+| `event.team` / `team_id` | The team starting the event (null on whistles) |
+| `event.restart` | Reserved for restarts; null for now |
+| `event.recipient_id`, `challenger_id`, `offender_id` | Set on a completed Pass, a Tackle and a Foul respectively; null otherwise |
+| `event.actor_speed_kmh` | Speed of the actor (0 on whistles) |
+| `event.details` | Type-specific details; `coordinates.start` is always `[x, y]`. Forwarded whole to the play-by-play agent, so it holds no ids |
+| `live_match_stats.possession_pct` | Each team's share of pass attempts so far (sums to 100) |
+| `live_match_stats.box_score` | Cumulative per team: `shots`, `shots_on_target`, `xg`, `passes_completed`, `passes_attempted`, `fouls` |
+| `player_tracking.players[]` | `player_id`, `name`, `team`, `role` (tactical: `GK`, `LB`, ... `ST`), `x`, `y`, `speed_mps`. `frame_rate_hz` is nominal |
+| `match_metadata` (`KICK_OFF` only) | `match_id`, `generator`, `competition`, invented `venue` (`name`, `city`, `capacity`), `attendance`, `referee` (`id`, `name`), and `teams.home/away` (`name`, `team_id`, `formation`, `attacking_direction`, `lineup` with each player's ids, shirt number and roles) |
+
+## Start of the event vs after it
+
+| Describes the moment the event **starts** | Describes the state **after** the event |
+|---|---|
+| `phase_of_play`, `defensive_structure`, line height, pressure | `possession_team`, `defending_team` |
+| `player_tracking` (the actor stands on the ball at `coordinates.start`) | `scoreboard`, `box_score`, `possession_pct` |
+| `event.team`, `event.actor`, `details.coordinates.start` | `possession_change.to_team` |

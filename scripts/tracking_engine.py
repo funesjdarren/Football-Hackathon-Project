@@ -36,6 +36,8 @@ class TacticalTrackingEngine:
     self.team_a = team_a_name
     self.team_b = team_b_name
     self.rng = rng or random.Random()
+    # Team A attacks toward x=120, team B toward x=0, for the whole match
+    self.direction = {team_a_name: 1, team_b_name: -1}
 
     # Assign concrete tactical roles to squad players
     self.players = {}
@@ -156,6 +158,28 @@ class TacticalTrackingEngine:
       })
 
     return frame_snapshot
+
+  def position(self, pid):
+    p = self.players[pid]
+    return p["x"], p["y"]
+
+  def nearest(self, team, x, y, exclude=(), outfield=False, k=1):
+    """The k players of a team closest to (x, y), nearest first."""
+    candidates = [
+        p
+        for p in self.players.values()
+        if p["team"] == team
+        and p["id"] not in exclude
+        and not (outfield and p["role"] == "GK")
+    ]
+    candidates.sort(key=lambda p: math.hypot(p["x"] - x, p["y"] - y))
+    return candidates[:k]
+
+  def keeper(self, team):
+    return next(
+        (p for p in self.players.values() if p["team"] == team and p["role"] == "GK"),
+        None,
+    )
 
   def _kick_off_spot(self, p, x, y, ball_x, ball_y, is_in_possession):
     """Moves a player into their own half, and defenders out of the circle."""
