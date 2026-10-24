@@ -23,6 +23,8 @@ BASE_FORMATION_433 = {
 
 ROLE_KEYS = ["GK", "LB", "LCB", "RCB", "RB", "DM", "LCM", "RCM", "LW", "ST", "RW"]
 
+CENTRE_CIRCLE_M = 9.15
+
 
 class TacticalTrackingEngine:
   """Maintains 22-player coordinates and smoothly morphs their positions
@@ -30,9 +32,10 @@ class TacticalTrackingEngine:
   relative to ball location, team possession, and tactical phases.
   """
 
-  def __init__(self, team_a_name, team_b_name, roster_a, roster_b):
+  def __init__(self, team_a_name, team_b_name, roster_a, roster_b, rng=None):
     self.team_a = team_a_name
     self.team_b = team_b_name
+    self.rng = rng or random.Random()
 
     # Assign concrete tactical roles to squad players
     self.players = {}
@@ -72,8 +75,13 @@ class TacticalTrackingEngine:
       possession_team,
       active_actor_id=None,
       defensive_block="Mid Block",
+      kick_off=False,
   ):
-    """Calculates tactical player shifts based on ball position and defensive posture."""
+    """Calculates tactical player shifts based on ball position and defensive posture.
+
+    With kick_off=True everyone but the taker stays in their own half and
+    the defending team keeps outside the centre circle.
+    """
     # Ball normalized position along the length of pitch (0.0 to 1.0)
     ball_progress = ball_x / PITCH_LENGTH
     frame_snapshot = []
@@ -114,15 +122,22 @@ class TacticalTrackingEngine:
           target_y = (target_y * 0.75) + (PITCH_WIDTH * 0.5 * 0.25)
 
       # 3. Ball Carrier Override: The active actor must be at the ball
-      if active_actor_id and pid == active_actor_id:
+      is_actor = bool(active_actor_id) and pid == active_actor_id
+      if is_actor:
         target_x = ball_x
         target_y = ball_y
+      else:
+        # Add organic micro-jitters (breathing room ± 1.2m)
+        target_x += self.rng.uniform(-1.2, 1.2)
+        target_y += self.rng.uniform(-1.2, 1.2)
 
-      # Add organic micro-jitters (breathing room ± 1.5m)
-      jitter_x = random.uniform(-1.2, 1.2)
-      jitter_y = random.uniform(-1.2, 1.2)
-      target_x = max(1.0, min(PITCH_LENGTH - 1.0, target_x + jitter_x))
-      target_y = max(1.0, min(PITCH_WIDTH - 1.0, target_y + jitter_y))
+      if kick_off and not is_actor:
+        target_x, target_y = self._kick_off_spot(
+            p, target_x, target_y, ball_x, ball_y, is_in_possession
+        )
+
+      target_x = max(1.0, min(PITCH_LENGTH - 1.0, target_x))
+      target_y = max(1.0, min(PITCH_WIDTH - 1.0, target_y))
 
       # Calculate movement delta and instantaneous speed
       dist_moved = math.hypot(target_x - p["x"], target_y - p["y"])
@@ -141,3 +156,20 @@ class TacticalTrackingEngine:
       })
 
     return frame_snapshot
+
+  def _kick_off_spot(self, p, x, y, ball_x, ball_y, is_in_possession):
+    """Moves a player into their own half, and defenders out of the circle."""
+    half = PITCH_LENGTH / 2
+    if p["direction"] == 1:
+      x = min(x, half - 1.0)
+    else:
+      x = max(x, half + 1.0)
+    if not is_in_possession:
+      dx, dy = x - ball_x, y - ball_y
+      dist = math.hypot(dx, dy)
+      if dist < CENTRE_CIRCLE_M:
+        if dist == 0:
+          dx, dy, dist = -p["direction"], 0.0, 1.0
+        x = ball_x + dx / dist * CENTRE_CIRCLE_M
+        y = ball_y + dy / dist * CENTRE_CIRCLE_M
+    return x, y
