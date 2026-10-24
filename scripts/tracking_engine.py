@@ -175,6 +175,10 @@ class TacticalTrackingEngine:
     candidates.sort(key=lambda p: math.hypot(p["x"] - x, p["y"] - y))
     return candidates[:k]
 
+  def remove_player(self, pid):
+    """A sent-off player leaves the pitch and every later frame."""
+    del self.players[pid]
+
   def keeper(self, team):
     return next(
         (p for p in self.players.values() if p["team"] == team and p["role"] == "GK"),

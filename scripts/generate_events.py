@@ -2,13 +2,14 @@ import argparse
 import copy
 from datetime import datetime, timezone
 import json
+import math
 import os
 import random
 import secrets
 import sys
 import time
 import paths
-from tracking_engine import PITCH_LENGTH, TacticalTrackingEngine
+from tracking_engine import PITCH_LENGTH, PITCH_WIDTH, TacticalTrackingEngine
 
 SYNTHETIC_TEAMS = ["FC Alpha", "Beta United"]
 TEAM_CODES = {"FC Alpha": "FCA", "Beta United": "BTU"}
@@ -21,6 +22,28 @@ SHOT_REASONS = {
     "Saved": "Shot Saved",
     "Missed": "Shot Missed",
     "Blocked": "Shot Blocked",
+}
+
+# xG from shot distance (m) and goal-mouth angle (rad): about 0.46 from six
+# yards out centrally, 0.20 from the penalty spot, 0.07 from 18 m, 0.02 from 25 m
+XG_INTERCEPT, XG_ANGLE, XG_DIST = -0.35, 0.85, -0.145
+GOAL_WIDTH_M = 7.32
+SHOT_MISS_WEIGHTS = {"Saved": 27, "Blocked": 28, "Missed": 45}
+
+# Discipline, per foul
+P_YELLOW = 0.165
+P_STRAIGHT_RED = 0.0025
+SECOND_YELLOW_MULT = 0.35  # referees are slower to show a booked player a 2nd yellow
+BOOKED_FOUL_MULT = 0.3  # booked players foul less
+OFFENDER_WEIGHTS = (6, 3, 1)  # the 1st, 2nd and 3rd nearest outfield defender
+
+# Match seconds until a restart is taken (all under a minute, so the State
+# of the Game check-ins never fall late)
+RESTART_STEP_S = {
+    "Kick-off": (30, 50),
+    "Goal Kick": (12, 20),
+    "Keeper Ball": (5, 10),
+    "Free Kick": (10, 25),
 }
 
 # Invented venues, like the clubs and players
@@ -112,15 +135,58 @@ def referee_actor(name):
 
 
 def kick_off_taker(tracking_engine, roster):
-  """The centre forward, who stands on the ball at kick-off."""
-  return next(
-      p for p in roster if tracking_engine.players[p["id"]]["role"] == "ST"
-  )
+  """The centre forward, or the outfield player nearest the spot if he was sent off."""
+  on_pitch = [p for p in roster if p["id"] in tracking_engine.players]
+  for p in on_pitch:
+    if tracking_engine.players[p["id"]]["role"] == "ST":
+      return p
+  team = tracking_engine.players[on_pitch[0]["id"]]["team"]
+  nearest = tracking_engine.nearest(
+      team, PITCH_LENGTH / 2, PITCH_WIDTH / 2, outfield=True
+  )[0]
+  return next(p for p in on_pitch if p["id"] == nearest["id"])
 
 
 def rel_x(direction, x):
   """Distance up the pitch from the attacking team's own goal line."""
   return x if direction == 1 else PITCH_LENGTH - x
+
+
+def shot_geometry(rx, y):
+  """Distance to the goal centre, and the angle the goal mouth makes."""
+  dx = PITCH_LENGTH - rx
+  dy = abs(y - PITCH_WIDTH / 2)
+  half = GOAL_WIDTH_M / 2
+  angle = math.atan2(GOAL_WIDTH_M * dx, dx * dx + dy * dy - half * half)
+  if angle < 0:
+    angle += math.pi
+  return math.hypot(dx, dy), angle
+
+
+def expected_goals(rx, y):
+  dist, angle = shot_geometry(rx, y)
+  return 1.0 / (1.0 + math.exp(-(XG_INTERCEPT + XG_ANGLE * angle + XG_DIST * dist)))
+
+
+def book(offender, rng):
+  """Card for a foul, as (card_issued, commentary_trigger, second_yellow).
+
+  A booked player can only get a second yellow, which counts as a red.
+  """
+  cards = offender["cards"]
+  r = rng.random()
+  if cards["yellow"]:
+    if r < P_YELLOW * SECOND_YELLOW_MULT:
+      cards["yellow"] += 1
+      cards["red"] += 1
+      return "Red", "SENDING_OFF_RED", True
+  elif r < P_STRAIGHT_RED:
+    cards["red"] += 1
+    return "Red", "SENDING_OFF_RED", False
+  elif r < P_STRAIGHT_RED + P_YELLOW:
+    cards["yellow"] += 1
+    return "Yellow", "BOOKING_YELLOW", False
+  return "None", None, False
 
 
 def kick_off_metadata(match_id, rosters, tracking_engine, referee, rng):
@@ -216,11 +282,14 @@ def simulate(rng, match_id="syn-unseeded"):
   whistle = "KICK_OFF"
   event_counter = 0
   possession_id, last_possession = 1, None
+  restart = None  # set by an event; the next packet takes it with a Pass
 
   while True:
     event_counter += 1
     event_team, reason = None, None
     recipient_id = challenger_id = offender_id = None
+    restart_now, restart = restart, None
+    step = None  # match seconds to the next packet; None = open-play default
     half_end = HALF_END_MIN[period] * 60
     if stoppage is None and clock_s >= half_end:
       stoppage = rng.randint(*STOPPAGE_MIN[period])
@@ -235,9 +304,11 @@ def simulate(rng, match_id="syn-unseeded"):
       # Whistle packets have the full packet shape so no consumer breaks,
       # and change no stats; the kick-off taker stands on the centre spot
       event_type = whistle
+      restart_now = None  # a whistle cancels any pending restart
       kicking_off = whistle in ("KICK_OFF", "SECOND_HALF")
       if kicking_off:
         phase = "Midfield Progression"
+        restart = "Kick-off"  # the next packet is the kick-off pass
       if whistle == "SECOND_HALF":
         reason = "Kick-off"  # the away team takes over for the 2nd half
       defensive_block = "Mid Block"
@@ -275,15 +346,17 @@ def simulate(rng, match_id="syn-unseeded"):
         defensive_block = "Low Block (Deep Defense)"
         defensive_line_height_m = round(rng.uniform(12.0, 22.0), 1)
 
-      # 2. Event Selection
-      if rx >= 75:
+      # 2. Event Selection (a restart is always taken with a pass)
+      if restart_now:
+        event_type = "Pass"
+      elif rx >= 75:
         event_type = rng.choices(
             ["Shot", "Pass", "Dribble", "Tackle", "Foul"],
-            weights=[25, 40, 15, 15, 5],
+            weights=[25, 40, 15, 15, 1.6],
         )[0]
       else:
         event_type = rng.choices(
-            ["Pass", "Dribble", "Tackle", "Foul"], weights=[70, 15, 10, 5]
+            ["Pass", "Dribble", "Tackle", "Foul"], weights=[70, 15, 10, 1.6]
         )[0]
 
       crowd_intensity = rng.randint(35, 55)
@@ -304,6 +377,7 @@ def simulate(rng, match_id="syn-unseeded"):
           possession_team=attacking_team,
           active_actor_id=current_actor["id"],
           defensive_block=defensive_block,
+          kick_off=restart_now == "Kick-off",
       )
 
       # 3. Simulate Event Mechanics & Movement
@@ -344,15 +418,18 @@ def simulate(rng, match_id="syn-unseeded"):
 
       elif event_type == "Shot":
         live_stats[attacking_team]["shots"] += 1
-        shot_xg = round(rng.uniform(0.03, 0.45 if ball_x < 105 else 0.75), 2)
+        shot_xg = expected_goals(rx, start_y)
         live_stats[attacking_team]["xg"] = round(
             live_stats[attacking_team]["xg"] + shot_xg, 2
         )
 
         crowd_intensity = rng.randint(75, 95)
-        outcome = rng.choices(
-            ["Saved", "Blocked", "Missed", "Goal"], weights=[35, 30, 25, 10]
-        )[0]
+        if rng.random() < shot_xg:  # goals happen as often as xG says
+          outcome = "Goal"
+        else:
+          outcome = rng.choices(
+              list(SHOT_MISS_WEIGHTS), weights=list(SHOT_MISS_WEIGHTS.values())
+          )[0]
 
         if outcome in ["Saved", "Goal"]:
           live_stats[attacking_team]["shots_on_target"] += 1
@@ -367,15 +444,42 @@ def simulate(rng, match_id="syn-unseeded"):
         payload_details = {
             "coordinates": {"start": [start_x, start_y]},
             "outcome": outcome,
-            "xG": shot_xg,
+            "xG": round(shot_xg, 2),
             "shot_speed_kmh": round(rng.uniform(70.0, 115.0), 1),
         }
+        if outcome != "Blocked":
+          # Where the ball crosses the goal line: in the goal mouth, or wide
+          if outcome in ("Goal", "Saved"):
+            off_centre = rng.uniform(-3.4, 3.4)
+          else:
+            off_centre = rng.choice([-1, 1]) * rng.uniform(4.5, 9.0)
+          payload_details["coordinates"]["end"] = [
+              rel_x(d, PITCH_LENGTH),
+              round(PITCH_WIDTH / 2 + off_centre, 1),
+          ]
 
         attacking_team, defending_team = defending_team, attacking_team
         reason = SHOT_REASONS[outcome]
-        keeper = tracking_engine.keeper(attacking_team)  # restarts from his goal
-        ball_x, ball_y = keeper["x"], keeper["y"]
-        next_actor = roster_player(keeper)
+        keeper = tracking_engine.keeper(attacking_team)
+        if outcome == "Goal":
+          restart = "Kick-off"  # the conceding team restarts from the centre
+          ball_x, ball_y = PITCH_LENGTH / 2, PITCH_WIDTH / 2
+          next_actor = kick_off_taker(tracking_engine, rosters[attacking_team])
+        elif outcome == "Saved":
+          restart = "Keeper Ball"
+          ball_x, ball_y = keeper["x"], keeper["y"]
+          next_actor = roster_player(keeper)
+        elif outcome == "Missed":
+          restart = "Goal Kick"
+          ball_x = rel_x(direction[attacking_team], 5.5)
+          ball_y = round(PITCH_WIDTH / 2 + rng.uniform(-9.0, 9.0), 1)
+          next_actor = roster_player(keeper)
+        else:  # Blocked: the nearest defender picks up the loose ball
+          next_actor = roster_player(tracking_engine.nearest(
+              attacking_team, ball_x, ball_y, outfield=True
+          )[0])
+        if restart:
+          step = rng.randint(*RESTART_STEP_S[restart])
 
       elif event_type in ["Tackle", "Foul"]:
         if event_type == "Tackle":
@@ -384,29 +488,34 @@ def simulate(rng, match_id="syn-unseeded"):
           )[0])
           challenger_id = opponent["id"]
         else:
-          opponent = rng.choice(rosters[defending_team])
+          # One of the 3 nearest outfield defenders; booked players foul less
+          candidates = tracking_engine.nearest(
+              defending_team, ball_x, ball_y, outfield=True, k=3
+          )
+          weights = [
+              w * (BOOKED_FOUL_MULT if roster_player(c)["cards"]["yellow"] else 1)
+              for w, c in zip(OFFENDER_WEIGHTS, candidates)
+          ]
+          opponent = roster_player(rng.choices(candidates, weights=weights)[0])
           offender_id = opponent["id"]
         won_ball = rng.random() > 0.50
 
         if event_type == "Foul":
           live_stats[defending_team]["fouls"] += 1
           crowd_intensity += 25
-          card_issued = rng.choices(
-              ["None", "Yellow", "Red"], weights=[75, 23, 2]
-          )[0]
-          if card_issued == "Yellow":
-            opponent["cards"]["yellow"] += 1
-            commentary_flag = "BOOKING_YELLOW"
-          elif card_issued == "Red":
-            opponent["cards"]["red"] += 1
-            commentary_flag = "SENDING_OFF_RED"
+          card_issued, commentary_flag, second_yellow = book(opponent, rng)
+          if card_issued == "Red":
+            tracking_engine.remove_player(opponent["id"])  # off for good
 
           payload_details = {
               "coordinates": {"start": [start_x, start_y]},
               "fouled_player": current_actor["name"],
               "offender": opponent["name"],
               "card_issued": card_issued,
+              "second_yellow": second_yellow,
           }
+          restart = "Free Kick"  # taken by the fouled player
+          step = rng.randint(*RESTART_STEP_S[restart])
           next_actor = current_actor
         else:
           payload_details = {
@@ -508,7 +617,7 @@ def simulate(rng, match_id="syn-unseeded"):
             "details": payload_details,
             "team": event_team,
             "team_id": TEAM_CODES.get(event_team),
-            "restart": None,
+            "restart": restart_now,
             "recipient_id": recipient_id,
             "challenger_id": challenger_id,
             "offender_id": offender_id,
@@ -541,7 +650,7 @@ def simulate(rng, match_id="syn-unseeded"):
     elif whistle:
       whistle = None  # the kick-off pass happens at the same clock time
     else:
-      clock_s += rng.randint(2, 6)
+      clock_s += step if step is not None else rng.randint(2, 6)
       if stoppage is not None:
         # Never run past the end of added time: the whistle lands exactly on it
         clock_s = min(clock_s, half_end + stoppage * 60)

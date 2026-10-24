@@ -36,14 +36,22 @@
 | `event.type` | `Pass`, `Shot`, `Dribble`, `Tackle`, `Foul`, or a whistle type |
 | `event.actor` | The player starting the event: `id`, `name`, `role`, `pos_key`, `shirt_number`, `cards`. On whistles it is the referee (`role` `Referee`, `shirt_number` null) |
 | `event.team` / `team_id` | The team starting the event (null on whistles) |
-| `event.restart` | Reserved for restarts; null for now |
+| `event.restart` | Set when this Pass restarts play: `Kick-off` (start of each half, and after a goal by the conceding team), `Goal Kick` (after a missed shot), `Keeper Ball` (after a save) or `Free Kick` (taken by the fouled player); null otherwise |
 | `event.recipient_id`, `challenger_id`, `offender_id` | Set on a completed Pass, a Tackle and a Foul respectively; null otherwise |
 | `event.actor_speed_kmh` | Speed of the actor (0 on whistles) |
-| `event.details` | Type-specific details; `coordinates.start` is always `[x, y]`. Forwarded whole to the play-by-play agent, so it holds no ids |
+| `event.details` | Type-specific details; `coordinates.start` is always `[x, y]`. Forwarded whole to the play-by-play agent, so it holds no ids. On a Shot: `xG` (from distance and angle; the shot is a goal with that probability) and, unless blocked, `coordinates.end` where the ball crosses the goal line. On a Foul: `card_issued` and `second_yellow` (true when a second yellow made it a red) |
 | `live_match_stats.possession_pct` | Each team's share of pass attempts so far (sums to 100) |
 | `live_match_stats.box_score` | Cumulative per team: `shots`, `shots_on_target`, `xg`, `passes_completed`, `passes_attempted`, `fouls` |
 | `player_tracking.players[]` | `player_id`, `name`, `team`, `role` (tactical: `GK`, `LB`, ... `ST`), `x`, `y`, `speed_mps`. `frame_rate_hz` is nominal |
 | `match_metadata` (`KICK_OFF` only) | `match_id`, `generator`, `competition`, invented `venue` (`name`, `city`, `capacity`), `attendance`, `referee` (`id`, `name`), and `teams.home/away` (`name`, `team_id`, `formation`, `attacking_direction`, `lineup` with each player's ids, shirt number and roles) |
+
+## Discipline and restarts
+
+- A foul is committed by one of the three nearest outfield defenders. Keepers are never carded.
+- Two yellows make a red: that Foul packet has `card_issued` `Red`, `second_yellow` true and `SENDING_OFF_RED`. `state_of_game.py` therefore counts one yellow fewer per second-yellow red.
+- A sent-off player leaves `player_tracking` from the next packet and never acts again.
+- Fouls never change possession. On a card packet `defending_team` is the offender's team; on a `GOAL_SCORED` packet it is the scoring team (possession changes on every shot).
+- Restarts are ordinary Pass packets labelled by `event.restart`, never extra whistle packets. The clock waits 5–50 match seconds before one.
 
 ## Start of the event vs after it
 

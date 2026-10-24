@@ -226,6 +226,66 @@ def test_frame_is_the_event_instant(seed):
     assert math.hypot(actor["x"] - start[0], actor["y"] - start[1]) <= 0.11
 
 
+@pytest.mark.parametrize("seed", range(50))
+def test_discipline(seed):
+  sent_off = set()
+  for p in g.simulate(random.Random(seed)):  # streamed, not cached
+    ev = p["event"]
+    ids = {pl["player_id"] for pl in p["player_tracking"]["players"]}
+    ids |= {ev["actor"]["id"], ev["recipient_id"], ev["challenger_id"], ev["offender_id"]}
+    assert not ids & sent_off  # a sent-off player never comes back
+    if ev["type"] != "Foul":
+      continue
+    details = ev["details"]
+    assert not ev["offender_id"].endswith("-101")  # keepers are never carded
+    assert ev["offender_id"].startswith(p["tactical_context"]["defending_team_id"])
+    if details["second_yellow"]:
+      assert details["card_issued"] == "Red"
+      assert p["broadcast_metadata"]["commentary_trigger"] == "SENDING_OFF_RED"
+    if details["card_issued"] == "Red":
+      sent_off.add(ev["offender_id"])
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_restarts(seed):
+  packets = match(seed)
+  for p, nxt in zip(packets, packets[1:]):
+    if nxt["event"]["type"] in g.MARKER_TYPES:
+      continue  # the half ended before the restart
+    ev, restart = p["event"], nxt["event"]["restart"]
+    outcome = ev["details"].get("outcome")
+    if p["broadcast_metadata"]["commentary_trigger"] == "GOAL_SCORED":
+      assert restart == "Kick-off" and nxt["event"]["type"] == "Pass"
+      assert nxt["event"]["details"]["coordinates"]["start"] == [60.0, 40.0]
+      conceding = p["tactical_context"]["possession_team"]
+      assert nxt["event"]["team"] == conceding
+      for pl in nxt["player_tracking"]["players"]:
+        if pl["player_id"] == nxt["event"]["actor"]["id"]:
+          continue
+        assert pl["x"] <= 59.0 if pl["team"] == g.SYNTHETIC_TEAMS[0] else pl["x"] >= 61.0
+        if pl["team"] != conceding:
+          assert math.hypot(pl["x"] - 60.0, pl["y"] - 40.0) >= 9.1
+    elif ev["type"] == "Shot" and outcome == "Missed":
+      assert restart == "Goal Kick" and nxt["event"]["actor"]["pos_key"] == "GK"
+      assert nxt["event"]["details"]["coordinates"]["start"][0] in (5.5, 114.5)
+    elif ev["type"] == "Shot" and outcome == "Saved":
+      assert restart == "Keeper Ball" and nxt["event"]["actor"]["pos_key"] == "GK"
+    elif ev["type"] == "Foul":
+      assert restart == "Free Kick"
+      assert nxt["event"]["actor"]["id"] == ev["actor"]["id"]
+
+
+def test_goals_follow_xg():
+  goals = xg = 0.0
+  for seed in range(50):
+    for p in g.simulate(random.Random(seed)):  # streamed, not cached
+      ev = p["event"]
+      if ev["type"] == "Shot":
+        xg += ev["details"]["xG"]
+        goals += ev["details"]["outcome"] == "Goal"
+  assert abs(goals - xg) <= 0.25 * xg, (goals, xg)
+
+
 @pytest.mark.parametrize("seed", range(5))
 def test_state_of_game_schedule(seed):
   sog = pytest.importorskip("state_of_game")  # needs the azure SDK; no network call
