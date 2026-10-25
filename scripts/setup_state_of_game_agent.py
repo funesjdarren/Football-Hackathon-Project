@@ -17,8 +17,9 @@ from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
 from dotenv import dotenv_values, load_dotenv, set_key
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV_PATH = os.path.join(REPO_ROOT, ".env")
+import paths
+
+ENV_PATH = paths.ENV_PATH
 ENV_KEY = "STATE_OF_GAME_AGENT_NAME"
 DEFAULT_AGENT_NAME = "MS-Football-Hackathon-State-of-Game"
 
@@ -28,8 +29,9 @@ FALLBACK_DEFINITION = {
     "model": "gpt-6-luna",
     "reasoning": {"effort": "low"},
 }
-# The teams are fictional and share surnames with real players, so no web search
-NOT_COPIED = ("instructions", "tools", "tool_choice")
+# The teams are fictional, so web search could only bring in wrong facts; a JSON
+# output format belongs to the agent that defines it
+NOT_COPIED = ("instructions", "tools", "tool_choice", "text", "structured_inputs")
 
 # Foundry rule: alphanumeric ends, hyphens inside, at most 63 characters
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -39,8 +41,8 @@ AGENT_DESCRIPTION = (
     " casual fans."
 )
 AGENT_INSTRUCTIONS = """\
-You are the "State of the Game" color commentator for Inside the Game, a live \
-football (soccer) companion for casual fans and complete beginners. A separate \
+You are the "State of the Game" color commentator for a live football (soccer) \
+companion app for casual fans and complete beginners. A separate \
 play-by-play commentator already explains every individual moment. Your job is \
 the bigger picture: the score and how it happened, who is on top right now, and \
 what to watch for next.
@@ -52,8 +54,7 @@ Ground rules:
 1. Use only facts and numbers from the JSON. Never invent players, injuries, \
 substitutions, formations, managers, quotes or history.
 2. The teams and players in these matches (such as FC Alpha and Beta United) are \
-fictional. Some surnames match real footballers, but they are not those people. \
-Never bring in real-world knowledge about any club or player.
+fictional. Never bring in real-world knowledge about any club or player.
 3. Talk about the flow of the match, not the single latest play.
 4. "last_10_minutes" is the recent spell and "box_score" is the whole match. The \
 best story is often where they disagree, or where the score disagrees with \

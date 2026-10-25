@@ -1,0 +1,17 @@
+{
+  "target_language": "ko",
+  "kind": "play",
+  "clock": "16:42",
+  "keep_exactly": [
+    "FC Alpha",
+    "Beta United",
+    "E. Garrow"
+  ],
+  "source": {
+    "headline": "Garrow scores for FC Alpha",
+    "casual": "E. Garrow finishes from about 13 m to put FC Alpha 1-0 up against Beta United.",
+    "why_it_matters": "The first goal of the match, at 16:42.",
+    "eli5_term": "xG",
+    "eli5_definition": "How likely a chance is to become a goal, from 0 to 1."
+  }
+}

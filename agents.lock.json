@@ -1,0 +1,12 @@
+{
+  "MS-Football-Hackathon-Fan-Voice": {
+    "definition_sha256": "745369c5f5ba419a326c2d5e2faf99f2f4936beba05a1b5446b09bbc1e969246",
+    "model": "gpt-6-luna",
+    "version": "1"
+  },
+  "MS-Football-Hackathon-Play-by-Play": {
+    "definition_sha256": "32fbee4fdc6011aa2b80e8805ef8cfa2b339c4d309daee288ad4ba2d1bb0feab",
+    "model": "gpt-6-luna",
+    "version": "2"
+  }
+}

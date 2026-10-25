@@ -1,9 +1,13 @@
+import argparse
 import json
 import math
 import os
 import sys
 import tkinter as tk
 from tkinter import ttk
+import match_intel
+import paths
+import personalize
 
 # Window configuration
 WINDOW_WIDTH = 1260
@@ -21,41 +25,122 @@ TEAM_A_COLOR = "#38bdf8"  # Light Blue
 TEAM_B_COLOR = "#f87171"  # Light Red
 GK_COLOR = "#facc15"      # Amber/Yellow
 BALL_COLOR = "#ffffff"
+FOCUS_COLOR = "#fde047"
+FONTS = {"ko": "Malgun Gothic"}  # Segoe UI has no Hangul
 
 
 class FootballMatchGUI:
 
-  def __init__(self, root):
+  def __init__(self, root, profile=None, data_dir=None, replay=False):
     self.root = root
-    self.root.title("Inside the Game — Live Tactical Commentary & Visualizer")
+    self.profile = profile or personalize.load_profile()
+    self.replay = replay
+    self.font = "Segoe UI"  # apply_profile sets the profile's font
+    self.styled = []  # (widget, size, weight...) whose font follows the profile
     self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
     self.root.configure(bg="#0f172a")
 
-    self.match_file_path = os.path.join("football_data", "match_data.jsonl")
-    self.commentary_file_path = os.path.join(
-        "football_data", "commentary.jsonl"
-    )
-
-    self.state_file_path = os.path.join("football_data", "state_of_game.jsonl")
+    self.data_dir = data_dir or paths.DATA_DIR
+    self.match_file_path = os.path.join(self.data_dir, "match_data.jsonl")
 
     self.file_pos = 0
-    self.comm_file_pos = 0
-    self.state_file_pos = 0
-    self.current_payload = None
+    self.intel = match_intel.MatchIntel()
+    self.focus_id = None
+    self.players = []  # the last frame, for clicks
+    self.last_packet = None
 
     self._build_header()
     self._build_pitch_canvas()
     self._build_sidebar()
+    self.apply_profile()
 
     # Start file polling loop (every 100ms)
     self.root.after(100, self.poll_data_feed)
 
+  def tr(self, text):
+    return personalize.ui(self.profile, text)
+
+  def style(self, widget, size, *weight):
+    self.styled.append((widget, size, *weight))
+    return widget
+
+  # --- VIEWER PROFILE ---
+
+  def apply_profile(self):
+    """Shows the match as the current profile's viewer: mode, language and feeds.
+
+    The commentary and State of the Game feeds are read again from the top, so a
+    switch redraws everything said so far in the new mode and language.
+    """
+    p = self.profile
+    self.font = FONTS.get(p["language"], "Segoe UI")
+    for widget, size, *weight in self.styled:
+      widget.config(font=(self.font, size, *weight))
+    title = f"Live Tactical Commentary - {p['display_name']}"
+    self.root.title(title + (" (REPLAY)" if self.replay else ""))
+    self.profile_var.set(p["display_name"])
+    self.badge_lbl.config(text=f"{self.tr(p['mode'])} | {p['language'].upper()}")
+    if p["language"] != "en" and not self.replay:  # wakes Fan Voice for this match
+      open(os.path.join(self.data_dir, personalize.WANTED_FLAG), "a").close()
+    self.stats_box.config(text=f" {self.tr('Live Match Analytics')} ")
+    self.state_title = self.tr("State of the Game")
+    self.state_box.config(text=f" {self.state_title} ")
+    self.comm_box.config(
+        text=f" {self.tr('Live AI Commentary')} ({self.tr(p['mode'])}) ")
+    if p["mode"] == "analyst":  # casual viewers get the room for commentary
+      self.tactic_box.pack(fill=tk.X, padx=12, pady=10, before=self.stats_box)
+    else:
+      self.tactic_box.pack_forget()
+    self.commentary_file_path, self.state_file_path = personalize.feed_paths(
+        p, self.data_dir)
+    self.comm_file_pos = self.state_file_pos = 0
+    self.comm_text.delete("1.0", tk.END)
+    self.state_text.delete("1.0", tk.END)
+    self.state_text.insert(
+        tk.END, self.tr("Waiting for the first State of the Game update..."))
+    self.focus_id = p["favourite_player_id"] or self.focus_id
+    if self.last_packet:
+      self.show_stats(self.last_packet)
+    self.show_card()
+
+  def switch_profile(self, _choice=None):
+    """The header dropdown: watch as another viewer from profiles/."""
+    self.profile = personalize.load_profile(self.choices[self.profile_var.get()])
+    self.apply_profile()
+    if self.profile["language"] != "en" and not os.path.exists(self.state_file_path):
+      note = ("This recording has no feed in this language." if self.replay else
+              "Starting commentary in this language: catching up on the match"
+              " so far...")
+      self.comm_text.insert(tk.END, self.tr(note) + "\n")
+
   # --- UI LAYOUT CREATION ---
 
   def _build_header(self):
-    """Broadcast Top Bar: Scoreboard, Match Clock, and Tactical Phase."""
+    """Broadcast Top Bar: Scoreboard, Match Clock, Tactical Phase and profile."""
     self.header_frame = tk.Frame(self.root, bg="#1e293b", height=60)
     self.header_frame.pack(fill=tk.X, side=tk.TOP)
+    # Viewer dropdown, styled like the header's other chips: display name -> profile
+    self.choices = {personalize.load_profile(name)["display_name"]: name
+                    for name in personalize.profile_names()}
+    self.profile_var = tk.StringVar()
+    picker = tk.OptionMenu(self.header_frame, self.profile_var, *self.choices,
+                           command=self.switch_profile)
+    picker.config(font=("Segoe UI", 10, "bold"), fg="#e2e8f0", bg="#0f172a",
+                  activeforeground="#38bdf8", activebackground="#0f172a",
+                  relief=tk.FLAT, bd=0, highlightthickness=0, indicatoron=False,
+                  padx=10, pady=4, cursor="hand2")
+    picker["menu"].config(font=("Segoe UI", 10), fg="#e2e8f0", bg="#1e293b",
+                          activeforeground="#0f172a", activebackground="#38bdf8", bd=0)
+    picker.pack(side=tk.RIGHT, padx=(0, 12))
+    tk.Label(self.header_frame, text="Viewer ▾", font=("Segoe UI", 9),
+             fg="#94a3b8", bg="#1e293b").pack(side=tk.RIGHT, padx=(0, 4))
+    self.badge_lbl = self.style(tk.Label(self.header_frame, fg="#a5b4fc", bg="#0f172a",
+                                         padx=10, pady=4), 10, "bold")
+    self.badge_lbl.pack(side=tk.RIGHT, padx=(0, 12))
+    if self.replay:
+      tk.Label(self.header_frame, text="REPLAY", font=("Segoe UI", 10, "bold"),
+               fg="#f87171", bg="#0f172a", padx=10, pady=4).pack(side=tk.RIGHT,
+                                                                  padx=(0, 12))
 
     self.clock_label = tk.Label(
         self.header_frame,
@@ -100,6 +185,18 @@ class FootballMatchGUI:
       highlightbackground="#334155",
     )
     self.canvas.pack()
+    self.canvas.bind("<Button-1>", self.focus_player)
+
+    # Below the pitch: the focused player's card and the profile's own metric
+    card_box = tk.Frame(self.pitch_frame, bg="#0f172a")
+    card_box.pack(fill=tk.X, pady=(8, 0))
+    style = {"bg": "#1e293b", "justify": tk.LEFT, "padx": 8, "pady": 4}
+    self.card_lbl = self.style(
+        tk.Label(card_box, fg="#f8fafc", anchor="nw", **style), 9)
+    self.card_lbl.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    self.metric_lbl = self.style(
+        tk.Label(card_box, fg="#fde68a", wraplength=230, **style), 10, "bold")
+    self.metric_lbl.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
 
     self.draw_pitch_markings()
 
@@ -110,8 +207,8 @@ class FootballMatchGUI:
         side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(0, 20), pady=15
     )
 
-    # 1. Tactical Duel Split Card (Intent vs Foil)
-    tactic_box = tk.LabelFrame(
+    # 1. Tactical Duel Split Card (Intent vs Foil), shown to analysts only
+    self.tactic_box = tactic_box = tk.LabelFrame(
         self.sidebar,
         text=" Tactical Duel (Tactic vs. Foil) ",
         font=("Segoe UI", 11, "bold"),
@@ -120,7 +217,6 @@ class FootballMatchGUI:
         padx=10,
         pady=8,
     )
-    tactic_box.pack(fill=tk.X, padx=12, pady=10)
 
     self.attack_intent_lbl = tk.Label(
         tactic_box,
@@ -145,54 +241,17 @@ class FootballMatchGUI:
     self.defense_foil_lbl.pack(anchor="w", pady=2)
 
     # 2. Cumulative Match Stats
-    stats_box = tk.LabelFrame(
-        self.sidebar,
-        text=" Live Match Analytics ",
-        font=("Segoe UI", 11, "bold"),
-        fg="#38bdf8",
-        bg="#1e293b",
-        padx=10,
-        pady=8,
-    )
-    stats_box.pack(fill=tk.X, padx=12, pady=5)
+    self.stats_box = self.style(tk.LabelFrame(
+        self.sidebar, fg="#38bdf8", bg="#1e293b", padx=10, pady=8), 11, "bold")
+    self.stats_box.pack(fill=tk.X, padx=12, pady=5)
 
-    self.poss_lbl = tk.Label(
-        stats_box,
-        text="Possession: 50% - 50%",
-        font=("Segoe UI", 10),
-        fg="#f8fafc",
-        bg="#1e293b",
-    )
-    self.poss_lbl.pack(anchor="w")
-
-    self.xg_lbl = tk.Label(
-        stats_box,
-        text="Expected Goals (xG): 0.00 - 0.00",
-        font=("Segoe UI", 10),
-        fg="#f8fafc",
-        bg="#1e293b",
-    )
-    self.xg_lbl.pack(anchor="w")
-
-    self.crowd_lbl = tk.Label(
-        stats_box,
-        text="Crowd Intensity Index: 40%",
-        font=("Segoe UI", 10),
-        fg="#f8fafc",
-        bg="#1e293b",
-    )
-    self.crowd_lbl.pack(anchor="w")
+    self.stats_lbl = self.style(
+        tk.Label(self.stats_box, fg="#f8fafc", bg="#1e293b", justify=tk.LEFT), 10)
+    self.stats_lbl.pack(anchor="w")
 
     # 3. State of the Game (color commentator, latest take only)
-    self.state_box = tk.LabelFrame(
-        self.sidebar,
-        text=" State of the Game ",
-        font=("Segoe UI", 11, "bold"),
-        fg="#38bdf8",
-        bg="#1e293b",
-        padx=10,
-        pady=8,
-    )
+    self.state_box = self.style(tk.LabelFrame(
+        self.sidebar, fg="#38bdf8", bg="#1e293b", padx=10, pady=8), 11, "bold")
     self.state_box.pack(fill=tk.X, padx=12, pady=5)
 
     state_body = tk.Frame(self.state_box, bg="#1e293b")
@@ -203,19 +262,16 @@ class FootballMatchGUI:
         height=8,
         bg="#0f172a",
         fg="#fde68a",
-        font=("Segoe UI", 9),
         wrap=tk.WORD,
         relief=tk.FLAT,
     )
+    self.style(self.state_text, 9)
     state_scroll = ttk.Scrollbar(
         state_body, orient=tk.VERTICAL, command=self.state_text.yview
     )
     self.state_text.configure(yscrollcommand=state_scroll.set)
     state_scroll.pack(side=tk.RIGHT, fill=tk.Y)
     self.state_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
-    self.state_text.insert(
-        tk.END, "Waiting for the first State of the Game update..."
-    )
 
     self.state_next_lbl = tk.Label(
         self.state_box,
@@ -223,35 +279,41 @@ class FootballMatchGUI:
             "Updates every 15 minutes, at half-time and full-time, and after"
             " goals or red cards."
         ),
-        font=("Segoe UI", 8),
         fg="#94a3b8",
         bg="#1e293b",
         wraplength=340,
         justify=tk.LEFT,
     )
+    self.style(self.state_next_lbl, 8)
     self.state_next_lbl.pack(anchor="w", pady=(4, 0))
 
-    # 4. Newcomer AI Commentary Feed
-    comm_box = tk.LabelFrame(
-        self.sidebar,
-        text=" Live AI Commentary (Casual Fan Companion) ",
-        font=("Segoe UI", 11, "bold"),
-        fg="#38bdf8",
-        bg="#1e293b",
-        padx=10,
-        pady=8,
-    )
-    comm_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 12))
+    # 4. AI Commentary Feed, in the profile's mode and language
+    self.comm_box = self.style(tk.LabelFrame(
+        self.sidebar, fg="#38bdf8", bg="#1e293b", padx=10, pady=8), 11, "bold")
+    self.comm_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 12))
 
-    self.comm_text = tk.Text(
-        comm_box,
-        bg="#0f172a",
-        fg="#f1f5f9",
-        font=("Segoe UI", 9),
-        wrap=tk.WORD,
-        relief=tk.FLAT,
-    )
+    self.comm_text = self.style(tk.Text(
+        self.comm_box, bg="#0f172a", fg="#f1f5f9", wrap=tk.WORD, relief=tk.FLAT), 9)
     self.comm_text.pack(fill=tk.BOTH, expand=True)
+
+  # --- PLAYER FOCUS ---
+
+  def focus_player(self, event):
+    """A click on the pitch focuses the nearest player within 15 px."""
+    def gap(p):
+      return math.dist(self.to_screen_coords(p["x"], p["y"]), (event.x, event.y))
+    nearest = min(self.players, key=gap, default=None)
+    if nearest and gap(nearest) <= 15:
+      self.focus_id = nearest["player_id"]
+      self.show_card()
+
+  def show_card(self):
+    lines = personalize.card_lines(self.intel.player_card(self.focus_id), self.profile)
+    self.card_lbl.config(text=f"{self.tr('Player Card')}: " + "\n".join(lines))
+
+  def show_stats(self, packet):
+    self.stats_lbl.config(text="\n".join(personalize.stat_lines(packet, self.profile)))
+    self.metric_lbl.config(text=personalize.metric_text(packet, self.profile))
 
   # --- PITCH RENDERING LOGIC ---
 
@@ -319,19 +381,11 @@ class FootballMatchGUI:
     tactics = packet["tactical_context"]
     self.phase_tag.config(text=f"Phase: {tactics['phase_of_play']}")
 
-    # 2. Update Stats
-    stats = packet["live_match_stats"]
-    poss = stats["possession_pct"]
-    box = stats["box_score"]
-    self.poss_lbl.config(
-        text=f"Possession: {home['team']} {poss[home['team']]}% | {away['team']} {poss[away['team']]}%"
-    )
-    self.xg_lbl.config(
-        text=f"xG: {home['team']} {box[home['team']]['xg']} | {box[away['team']]['xg']} {away['team']}"
-    )
-    self.crowd_lbl.config(
-        text=f"Crowd Intensity: {packet['broadcast_metadata']['crowd_intensity_index']}%"
-    )
+    # 2. Update Stats, the Player Card and the profile's metric
+    self.intel.observe(packet)
+    self.last_packet = packet  # for a profile switch between packets
+    self.show_stats(packet)
+    self.show_card()
 
     # 3. Update Tactical Card
     self.attack_intent_lbl.config(
@@ -342,10 +396,11 @@ class FootballMatchGUI:
     )
 
     # 4. Render 22 Players from tracking data
-    tracking = packet.get("player_tracking", {})
-    for p in tracking.get("players", []):
+    self.players = packet.get("player_tracking", {}).get("players", [])
+    for p in self.players:
       px, py = self.to_screen_coords(p["x"], p["y"])
       r = 7
+      focused = p["player_id"] == self.focus_id
 
       color = (
           GK_COLOR
@@ -364,17 +419,17 @@ class FootballMatchGUI:
           px + r,
           py + r,
           fill=color,
-          outline="#ffffff",
-          width=1,
+          outline=FOCUS_COLOR if focused else "#ffffff",
+          width=3 if focused else 1,
           tags="dynamic_element",
       )
-      # Role / Name tag
+      # Role tag, or the name of the focused player
       self.canvas.create_text(
           px,
           py - 11,
-          text=p["role"],
-          fill="#f8fafc",
-          font=("Segoe UI", 7, "bold"),
+          text=p["name"] if focused else p["role"],
+          fill=FOCUS_COLOR if focused else "#f8fafc",
+          font=("Segoe UI", 8 if focused else 7, "bold"),
           tags="dynamic_element",
       )
 
@@ -401,6 +456,11 @@ class FootballMatchGUI:
             arrow=tk.LAST,
             tags="dynamic_element",
         )
+        quality = match_intel.pass_quality(packet)
+        if quality and self.profile["mode"] == "analyst":
+          self.canvas.create_text(
+              ex, ey + 14, text=f"{quality['label']} pass ({quality['difficulty']})",
+              fill="#fde68a", font=("Segoe UI", 8, "bold"), tags="dynamic_element")
 
       # Draw Ball with glow
       self.canvas.create_oval(
@@ -442,7 +502,7 @@ class FootballMatchGUI:
     """Replaces the panel with the newest State of the Game take."""
     label = entry.get("label")
     self.state_box.config(
-        text=f" State of the Game  ⏱ {entry.get('clock', '')}"
+        text=f" {self.state_title}  ⏱ {entry.get('clock', '')}"
         + (f" · {label} " if label else " ")
     )
     self.state_text.delete("1.0", tk.END)
@@ -468,43 +528,27 @@ class FootballMatchGUI:
 
   def poll_data_feed(self):
     """Tails match_data.jsonl and commentary.jsonl."""
-    # Poll match events
-    if os.path.exists(self.match_file_path):
-      with open(self.match_file_path, "r") as f:
-        f.seek(self.file_pos)
-        lines = f.readlines()
-        self.file_pos = f.tell()
+    # Poll match events (a packet that can't be drawn is skipped, never stops this loop)
+    lines, self.file_pos = self.read_complete_lines(self.match_file_path, self.file_pos)
+    for line in lines:
+      try:
+        self.render_frame(json.loads(line))
+      except Exception as exc:
+        print(f"Skipped a packet the window can't draw: {exc!r}", file=sys.stderr)
 
-        for line in lines:
-          line = line.strip()
-          if line:
-            try:
-              packet = json.loads(line)
-              self.render_frame(packet)
-            except json.JSONDecodeError:
-              pass
-
-    # Poll AI Commentary
-    if os.path.exists(self.commentary_file_path):
-      with open(self.commentary_file_path, "r") as f:
-        f.seek(self.comm_file_pos)
-        lines = f.readlines()
-        self.comm_file_pos = f.tell()
-
-        for line in lines:
-          line = line.strip()
-          if line:
-            try:
-              comm_entry = json.loads(line)
-              self.comm_text.insert(
-                  tk.END,
-                  f"\n[{comm_entry['clock']}] {comm_entry['text']}\n"
-                  + ("-" * 42)
-                  + "\n",
-              )
-              self.comm_text.see(tk.END)
-            except json.JSONDecodeError:
-              pass
+    # Poll AI Commentary (a bad row is skipped, never stops this loop)
+    lines, self.comm_file_pos = self.read_complete_lines(
+        self.commentary_file_path, self.comm_file_pos)
+    for line in lines:
+      try:
+        entry = json.loads(line)
+      except json.JSONDecodeError:
+        continue
+      if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+        text = personalize.row_text(entry, self.profile)
+        self.comm_text.insert(
+            tk.END, f"\n[{entry.get('clock', '')}] {text}\n{'-' * 42}\n")
+        self.comm_text.see(tk.END)
 
     # Poll State of the Game (a bad line must never stop this loop)
     try:
@@ -516,6 +560,14 @@ class FootballMatchGUI:
 
 
 if __name__ == "__main__":
+  parser = argparse.ArgumentParser(description="Live match window.")
+  parser.add_argument("--profile",
+                      help="a viewer profile in profiles/ (e.g. casual_ko)")
+  parser.add_argument("--data-dir",
+                      help="read the feeds from here (default: football_data)")
+  parser.add_argument("--replay", action="store_true", help="show the REPLAY badge")
+  args = parser.parse_args()
   root = tk.Tk()
-  app = FootballMatchGUI(root)
+  app = FootballMatchGUI(
+      root, personalize.load_profile(args.profile), args.data_dir, args.replay)
   root.mainloop()

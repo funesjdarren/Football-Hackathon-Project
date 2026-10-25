@@ -1,0 +1,2 @@
+# Optional: only needed to run the tests in tests/ (the app never uses them)
+pytest==8.4.2

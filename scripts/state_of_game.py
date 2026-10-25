@@ -19,11 +19,13 @@ from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
+import paths
+
 # Load environment variables
 load_dotenv()
 
-MATCH_PATH = os.path.join("football_data", "match_data.jsonl")
-STATE_PATH = os.path.join("football_data", "state_of_game.jsonl")
+MATCH_PATH = os.path.join(paths.DATA_DIR, "match_data.jsonl")
+STATE_PATH = os.path.join(paths.DATA_DIR, "state_of_game.jsonl")
 
 # Schedule (*_S values are match seconds; 1 match minute is ~15 real seconds unpiped)
 CHECK_IN_MINUTES = {1: (15, 30), 2: (60, 75)}
@@ -539,8 +541,9 @@ def publish(tracker, take, ask):
     if not take.get("previous_match"):
       tracker.previous_take = text
 
-  entry = {"clock": take["clock"], "text": text, "label": take["label"], "next": take["next"]}
-  os.makedirs("football_data", exist_ok=True)
+  entry = {"clock": take["clock"], "text": text, "label": take["label"], "next": take["next"],
+           "written_at": datetime.now(timezone.utc).isoformat()}  # replays keep timing
+  os.makedirs(paths.DATA_DIR, exist_ok=True)
   with open(STATE_PATH, "a") as f:
     f.write(json.dumps(entry) + "\n")
   print(
