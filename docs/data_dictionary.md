@@ -31,8 +31,9 @@
 | `tactical_context.phase_of_play` | `Build-Up (Defensive Third)`, `Midfield Progression` or `Final Third Attack`, measured from the goal of the team that starts the event |
 | `tactical_context.possession_team` / `defending_team` | The team on the ball **after** the event, and the other team. `*_team_id` give their codes |
 | `tactical_context.defensive_structure` | `High Press`, `Mid Block`, `Compact Central Shape` or `Low Block (Deep Defense)` |
-| `tactical_context.defensive_line_height_meters`, `pressure_distance_to_ball_meters` | Shape of the team defending the event |
-| `possession_change` | `changed`, `from_team` (who started the event), `to_team` (always `possession_team`), `reason` (`Interception`, `Tackle`, `Goal`, `Shot Saved`, `Shot Missed`, `Shot Blocked`, `Kick-off`; null when unchanged), `possession_id` (starts at 1, +1 per change) |
+| `tactical_context.defensive_line_height_meters` | Mean distance of the defending team's back four from its own goal line, from the tracking frame |
+| `tactical_context.pressure_distance_to_ball_meters` | Metres from the ball to the nearest defending player, from the tracking frame |
+| `possession_change` | `changed`, `from_team` (who started the event), `to_team` (always `possession_team`), `reason` (`Interception`, `Tackle`, `Dribble Lost`, `Goal`, `Shot Saved`, `Shot Missed`, `Shot Blocked`, `Kick-off`; null when unchanged), `possession_id` (starts at 1, +1 per change) |
 | `event.type` | `Pass`, `Shot`, `Dribble`, `Tackle`, `Foul`, or a whistle type |
 | `event.actor` | The player starting the event: `id`, `name`, `role`, `pos_key`, `shirt_number`, `cards`. On whistles it is the referee (`role` `Referee`, `shirt_number` null) |
 | `event.team` / `team_id` | The team starting the event (null on whistles) |
@@ -42,7 +43,7 @@
 | `event.details` | Type-specific details; `coordinates.start` is always `[x, y]`. Forwarded whole to the play-by-play agent, so it holds no ids. On a Shot: `xG` (from distance and angle; the shot is a goal with that probability) and, unless blocked, `coordinates.end` where the ball crosses the goal line. On a Foul: `card_issued` and `second_yellow` (true when a second yellow made it a red) |
 | `live_match_stats.possession_pct` | Each team's share of pass attempts so far (sums to 100) |
 | `live_match_stats.box_score` | Cumulative per team: `shots`, `shots_on_target`, `xg`, `passes_completed`, `passes_attempted`, `fouls` |
-| `player_tracking.players[]` | `player_id`, `name`, `team`, `role` (tactical: `GK`, `LB`, ... `ST`), `x`, `y`, `speed_mps`. `frame_rate_hz` is nominal |
+| `player_tracking.players[]` | `player_id`, `name`, `team`, `role` (tactical: `GK`, `LB`, ... `ST`), `x`, `y`, `speed_mps`. Nobody moves faster than 9 m/s of match time between frames; the defender nearest the ball presses goal-side of it and the next one covers. Frames are 0–50 match seconds apart (60 s before kick-off, 900 s across half-time), so `frame_rate_hz` is nominal |
 | `match_metadata` (`KICK_OFF` only) | `match_id`, `generator`, `competition`, invented `venue` (`name`, `city`, `capacity`), `attendance`, `referee` (`id`, `name`), and `teams.home/away` (`name`, `team_id`, `formation`, `attacking_direction`, `lineup` with each player's ids, shirt number and roles) |
 
 ## Discipline and restarts
@@ -52,6 +53,15 @@
 - A sent-off player leaves `player_tracking` from the next packet and never acts again.
 - Fouls never change possession. On a card packet `defending_team` is the offender's team; on a `GOAL_SCORED` packet it is the scoring team (possession changes on every shot).
 - Restarts are ordinary Pass packets labelled by `event.restart`, never extra whistle packets. The clock waits 5–50 match seconds before one.
+
+## How values are generated
+
+- **Event mix:** each phase has fixed Pass / Dribble / Tackle / Foul weights (`ZONE_WEIGHTS`), with no fouls inside the box. Within 32 m of goal a Shot weight of `13 x (xG / 0.1) ^ 0.65` is added, so most shots come from good positions.
+- **xG:** `1 / (1 + e^-(-0.35 + 0.85 x angle - 0.145 x distance))`, using the angle the goal mouth makes (radians) and the distance to its centre (m). About 0.46 from six yards out centrally, 0.20 from the penalty spot, 0.07 from 18 m.
+- **Passes:** aimed by phase (20% of final-third passes into the box); completion `0.92 - 0.0065 per m beyond 12 m`, `-0.30` into the box, `-0.06` if the passer is pressed within 2 m, kept between 0.2 and 0.97. The ball ends within the receiver's reach before the next packet, so the ball carrier is always on the ball.
+- **Clock:** 2–5 s per pass (3–6 s beyond 30 m), 2–4 s per dribble, tackle or loose ball, and 5–50 s before restarts.
+- **Calibration** (means over seeds 1–300): 2.87 goals (7% of matches end 0-0), 26 shots, 9.1 on target, 2.74 xG, 21.6 fouls, 3.3 yellows, 0.12 reds; half-time around 47', full-time around 94'; about 1,480 packets, so about 25 minutes at `--speed 1`.
+- **Determinism:** the same seed and code give the same match apart from `timestamp_utc`. Changing any constant changes every seed's match.
 
 ## Start of the event vs after it
 

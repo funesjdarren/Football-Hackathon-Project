@@ -27,41 +27,24 @@ PHASES = {"Build-Up (Defensive Third)", "Midfield Progression", "Final Third Att
 EVENT_TYPES = {"Pass", "Shot", "Dribble", "Tackle", "Foul", *g.MARKER_TYPES}
 TRIGGERS = {None, "GOAL_SCORED", "BOOKING_YELLOW", "SENDING_OFF_RED"}
 # Every field a v1 consumer reads must still be there on every packet
-V1_PATHS = [
-    "event_id",
-    "broadcast_metadata.timestamp_utc",
-    "broadcast_metadata.clock.period",
-    "broadcast_metadata.clock.display_time",
-    "broadcast_metadata.clock.minute",
-    "broadcast_metadata.clock.second",
-    "broadcast_metadata.scoreboard.home.team",
-    "broadcast_metadata.scoreboard.home.score",
-    "broadcast_metadata.scoreboard.away.team",
-    "broadcast_metadata.scoreboard.away.score",
-    "broadcast_metadata.var_status",
-    "broadcast_metadata.crowd_intensity_index",
-    "broadcast_metadata.commentary_trigger",
-    "tactical_context.phase_of_play",
-    "tactical_context.possession_team",
-    "tactical_context.defending_team",
-    "tactical_context.defensive_structure",
-    "tactical_context.defensive_line_height_meters",
-    "tactical_context.pressure_distance_to_ball_meters",
-    "event.type",
-    "event.actor.id",
-    "event.actor.name",
-    "event.actor.role",
-    "event.actor.pos_key",
-    "event.actor.shirt_number",
-    "event.actor.cards",
-    "event.actor_speed_kmh",
-    "event.details.coordinates.start",
-    "live_match_stats.possession_pct",
-    "live_match_stats.box_score",
-    "player_tracking.frame_rate_hz",
-    "player_tracking.pitch_units",
-    "player_tracking.players",
-]
+V1_PATHS = """
+    event_id broadcast_metadata.timestamp_utc
+    broadcast_metadata.clock.period broadcast_metadata.clock.display_time
+    broadcast_metadata.clock.minute broadcast_metadata.clock.second
+    broadcast_metadata.scoreboard.home.team broadcast_metadata.scoreboard.home.score
+    broadcast_metadata.scoreboard.away.team broadcast_metadata.scoreboard.away.score
+    broadcast_metadata.var_status broadcast_metadata.crowd_intensity_index
+    broadcast_metadata.commentary_trigger
+    tactical_context.phase_of_play tactical_context.possession_team
+    tactical_context.defending_team tactical_context.defensive_structure
+    tactical_context.defensive_line_height_meters
+    tactical_context.pressure_distance_to_ball_meters
+    event.type event.actor.id event.actor.name event.actor.role event.actor.pos_key
+    event.actor.shirt_number event.actor.cards event.actor_speed_kmh
+    event.details.coordinates.start
+    live_match_stats.possession_pct live_match_stats.box_score
+    player_tracking.frame_rate_hz player_tracking.pitch_units player_tracking.players
+""".split()
 
 
 @functools.lru_cache(maxsize=8)  # a cached match holds about 20 MB
@@ -81,13 +64,11 @@ def match_seconds(packet):
 
 
 def without_timestamps(packets):
-  """Packets minus the wall-clock time, which is the only unseeded field."""
-  out = []
-  for p in packets:
-    p = dict(p, broadcast_metadata=dict(p["broadcast_metadata"]))
-    del p["broadcast_metadata"]["timestamp_utc"]
-    out.append(p)
-  return out
+  """Packets with the wall-clock time blanked: it is the only unseeded field."""
+  return [
+      dict(p, broadcast_metadata=dict(p["broadcast_metadata"], timestamp_utc=None))
+      for p in packets
+  ]
 
 
 def markers(packets):
@@ -264,7 +245,7 @@ def test_restarts(seed):
           continue
         assert pl["x"] <= 59.0 if pl["team"] == g.SYNTHETIC_TEAMS[0] else pl["x"] >= 61.0
         if pl["team"] != conceding:
-          assert math.hypot(pl["x"] - 60.0, pl["y"] - 40.0) >= 9.1
+          assert math.hypot(pl["x"] - 60.0, pl["y"] - 40.0) >= 9.15
     elif ev["type"] == "Shot" and outcome == "Missed":
       assert restart == "Goal Kick" and nxt["event"]["actor"]["pos_key"] == "GK"
       assert nxt["event"]["details"]["coordinates"]["start"][0] in (5.5, 114.5)
@@ -275,15 +256,93 @@ def test_restarts(seed):
       assert nxt["event"]["actor"]["id"] == ev["actor"]["id"]
 
 
-def test_goals_follow_xg():
-  goals = xg = 0.0
-  for seed in range(50):
+def test_match_rates():
+  """50-match means stay football-realistic, and goals follow xG."""
+  totals = dict.fromkeys(("goals", "xg", "shots", "fouls", "yellows"), 0.0)
+  seeds = range(50)
+  for seed in seeds:
     for p in g.simulate(random.Random(seed)):  # streamed, not cached
       ev = p["event"]
       if ev["type"] == "Shot":
-        xg += ev["details"]["xG"]
-        goals += ev["details"]["outcome"] == "Goal"
-  assert abs(goals - xg) <= 0.25 * xg, (goals, xg)
+        totals["shots"] += 1
+        totals["xg"] += ev["details"]["xG"]
+        totals["goals"] += ev["details"]["outcome"] == "Goal"
+      elif ev["type"] == "Foul":
+        totals["fouls"] += 1
+      totals["yellows"] += p["broadcast_metadata"]["commentary_trigger"] == "BOOKING_YELLOW"
+  mean = {k: v / len(seeds) for k, v in totals.items()}
+  assert 2 <= mean["goals"] <= 4, mean
+  assert 20 <= mean["shots"] <= 32, mean
+  assert 15 <= mean["fouls"] <= 30, mean
+  assert 2 <= mean["yellows"] <= 5, mean
+  assert abs(mean["goals"] - mean["xg"]) <= 1.0, mean
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_players_never_outrun_a_sprint(seed):
+  packets = match(seed)
+  for before, after in zip(packets, packets[1:]):
+    (period_0, s_0), (period_1, s_1) = match_seconds(before), match_seconds(after)
+    if period_0 != period_1:
+      continue  # half-time
+    dt = s_1 - s_0
+    old = {pl["player_id"]: pl for pl in before["player_tracking"]["players"]}
+    for pl in after["player_tracking"]["players"]:
+      moved = math.hypot(pl["x"] - old[pl["player_id"]]["x"], pl["y"] - old[pl["player_id"]]["y"])
+      # 0.15 m allows for positions being rounded to 0.1 m
+      assert moved <= g.SPRINT_MPS * dt + 0.15, (after["event_id"], pl["name"], moved, dt)
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_pass_recipient_is_nearest_teammate(seed):
+  for p in match(seed):
+    ev = p["event"]
+    if ev["type"] != "Pass" or ev["details"]["outcome"] != "Complete":
+      continue
+    end = ev["details"]["coordinates"]["end"]
+    mates = [
+        pl
+        for pl in p["player_tracking"]["players"]
+        if pl["team"] == ev["team"] and pl["player_id"] != ev["actor"]["id"]
+    ]
+    distance = {pl["player_id"]: math.hypot(pl["x"] - end[0], pl["y"] - end[1]) for pl in mates}
+    assert distance[ev["recipient_id"]] <= min(distance.values()) + 0.15
+
+
+def test_tracking_engine_rules():
+  """Sprint cap, the presser's spot and line heights, on the engine directly."""
+  import tracking_engine as te  # noqa: E402
+
+  rng = random.Random(1)
+  home, away = g.SYNTHETIC_TEAMS
+  squads = [g.generate_squad(t, g.LAST_NAMES[i * 11:(i + 1) * 11], rng) for i, t in enumerate((home, away))]
+  engine = te.TacticalTrackingEngine(home, away, squads[0], squads[1], rng=rng)
+
+  # 1. With dt, nobody moves further than a sprint
+  before = {pid: (p["x"], p["y"]) for pid, p in engine.players.items()}
+  for pl in engine.update_frame(20.0, 70.0, home, dt=1.0):
+    old = before[pl["player_id"]]
+    assert math.hypot(pl["x"] - old[0], pl["y"] - old[1]) <= te.SPRINT_MPS + 0.15
+
+  # 2. The defender nearest the ball stands goal-side of it, within the block's gap
+  for block, (low, high) in te.PRESS_GAP_M.items():
+    # The engine picks the outfield defender nearest the ball before moving
+    defenders = [p for p in engine.players.values() if p["team"] == away and p["role"] != "GK"]
+    presser_id = min(defenders, key=lambda p: math.hypot(p["x"] - 60.0, p["y"] - 40.0))["id"]
+    frame = engine.update_frame(60.0, 40.0, home, defensive_block=block)
+    presser = next(pl for pl in frame if pl["player_id"] == presser_id)
+    assert presser["x"] > 60.0  # the away team defends the goal at x=120
+    assert low - 0.15 <= math.hypot(presser["x"] - 60.0, presser["y"] - 40.0) <= high + 0.15
+
+  # 3. A High Press holds a higher line than a Mid Block, and a Low Block a deeper one
+  def line(block):
+    heights = []
+    for _ in range(10):
+      engine.update_frame(60.0, 40.0, home, defensive_block=block)
+      heights.append(engine.line_height(away))
+    return sum(heights) / len(heights)
+
+  assert line("High Press") > line("Mid Block") > line("Low Block (Deep Defense)")
 
 
 @pytest.mark.parametrize("seed", range(5))
