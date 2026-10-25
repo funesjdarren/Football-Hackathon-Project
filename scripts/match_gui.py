@@ -27,6 +27,8 @@ GK_COLOR = "#facc15"      # Amber/Yellow
 BALL_COLOR = "#ffffff"
 FOCUS_COLOR = "#fde047"
 FONTS = {"ko": "Malgun Gothic"}  # Segoe UI has no Hangul
+BALL_CARRIER_ICON = "⚽"
+BALL_CARRIER_ICON_SIZE = 18
 
 
 class FootballMatchGUI:
@@ -370,7 +372,8 @@ class FootballMatchGUI:
     self.canvas.delete("dynamic_element")
 
     # 1. Update Match Header
-    clock_str = packet["broadcast_metadata"]["clock"]["display_time"]
+    clock = packet["broadcast_metadata"]["clock"]
+    clock_str = clock["display_time"]
     home = packet["broadcast_metadata"]["scoreboard"]["home"]
     away = packet["broadcast_metadata"]["scoreboard"]["away"]
     self.clock_label.config(text=f"⏱ {clock_str}")
@@ -397,10 +400,12 @@ class FootballMatchGUI:
 
     # 4. Render 22 Players from tracking data
     self.players = packet.get("player_tracking", {}).get("players", [])
+    actor_id = packet["event"]["actor"]["id"]
     for p in self.players:
       px, py = self.to_screen_coords(p["x"], p["y"])
       r = 7
       focused = p["player_id"] == self.focus_id
+      has_ball = p["player_id"] == actor_id
 
       color = (
           GK_COLOR
@@ -426,8 +431,8 @@ class FootballMatchGUI:
       # Role tag, or the name of the focused player
       self.canvas.create_text(
           px,
-          py - 11,
-          text=p["name"] if focused else p["role"],
+          py - (20 if has_ball else 11),
+          text=p["name"] if focused else f'{p["role"]}: {p["player_id"]}',
           fill=FOCUS_COLOR if focused else "#f8fafc",
           font=("Segoe UI", 8 if focused else 7, "bold"),
           tags="dynamic_element",
@@ -462,15 +467,15 @@ class FootballMatchGUI:
               ex, ey + 14, text=f"{quality['label']} pass ({quality['difficulty']})",
               fill="#fde68a", font=("Segoe UI", 8, "bold"), tags="dynamic_element")
 
-      # Draw Ball with glow
-      self.canvas.create_oval(
-          bx - 5,
-          by - 5,
-          bx + 5,
-          by + 5,
-          fill="#ffffff",
-          outline="#000000",
-          width=1,
+    ball_carrier = next(
+        (p for p in self.players if p["player_id"] == actor_id), None)
+    if ball_carrier:
+      px, py = self.to_screen_coords(ball_carrier["x"], ball_carrier["y"])
+      self.canvas.create_text(
+          px,
+          py,
+          text=BALL_CARRIER_ICON,
+          font=("Segoe UI Emoji", BALL_CARRIER_ICON_SIZE),
           tags="dynamic_element",
       )
 

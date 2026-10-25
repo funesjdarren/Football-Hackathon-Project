@@ -166,6 +166,63 @@ def test_window_follows_the_profile(tmp_path, match):
     root.destroy()
 
 
+def test_ball_carrier_has_large_soccer_ball_icon(tmp_path, match):
+  tk = pytest.importorskip("tkinter")
+  import match_gui  # noqa: E402
+  try:
+    root = tk.Tk()
+  except tk.TclError:
+    pytest.skip("no desktop session")
+  root.withdraw()
+  try:
+    app = match_gui.FootballMatchGUI(root, pz.load_profile("casual_en"),
+                                     str(tmp_path))
+    packet = next(
+        p for p in match
+        if p["event"]["actor"]["id"] in {
+            player["player_id"] for player in p["player_tracking"]["players"]})
+    app.render_frame(packet)
+    icons = [
+        item for item in app.canvas.find_withtag("dynamic_element")
+        if app.canvas.type(item) == "text"
+        and app.canvas.itemcget(item, "text") == match_gui.BALL_CARRIER_ICON
+    ]
+    assert len(icons) == 1
+    player_markers = [
+        item for item in app.canvas.find_withtag("dynamic_element")
+        if app.canvas.type(item) == "oval"
+    ]
+    assert len(player_markers) == len(app.players)
+    assert str(match_gui.BALL_CARRIER_ICON_SIZE) in \
+        app.canvas.itemcget(icons[0], "font").split()
+  finally:
+    root.destroy()
+
+
+def test_commentary_is_immediate_and_keeps_all_rows(tmp_path, capsys):
+  tk = pytest.importorskip("tkinter")
+  import match_gui  # noqa: E402
+  try:
+    root = tk.Tk()
+  except tk.TclError:
+    pytest.skip("no desktop session")
+  root.withdraw()
+  try:
+    app = match_gui.FootballMatchGUI(root, pz.load_profile("casual_en"),
+                                     str(tmp_path))
+    with open(app.commentary_file_path, "w") as f:
+      f.write(json.dumps({"clock": "1:56", "text": "older commentary"}) + "\n")
+      f.write(json.dumps({"clock": "invalid", "text": "newer commentary"}) + "\n")
+
+    app.poll_data_feed()
+    shown = app.comm_text.get("1.0", "end")
+    assert "older commentary" in shown
+    assert "newer commentary" in shown
+    assert not capsys.readouterr().err
+  finally:
+    root.destroy()
+
+
 def test_live_window_wakes_fan_voice_only_for_korean(tmp_path):
   tk = pytest.importorskip("tkinter")
   import match_gui  # noqa: E402

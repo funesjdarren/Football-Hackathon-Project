@@ -42,6 +42,8 @@ def build_input(packet, reason=None):
   ev, details = packet["event"], packet["event"]["details"]
   home, away = meta["scoreboard"]["home"], meta["scoreboard"]["away"]
   opponents = away["team"] if ev["team"] == home["team"] else home["team"]
+  player_roles = {p["player_id"]: p["role"]
+                  for p in packet["player_tracking"]["players"]}
   start, end = details["coordinates"]["start"], details["coordinates"].get("end")
   kind = ev["type"]
   if kind == "Shot":
@@ -54,11 +56,20 @@ def build_input(packet, reason=None):
   elif kind == "Dribble":
     facts = {"kept_the_ball": details["success"], "carried_m": metres(start, end)}
   elif kind == "Tackle":
-    facts = {"challenger": details["challenger"], "challenger_team": opponents}
+    challenger_id = ev["challenger_id"]
+    facts = {
+        "challenger": {"player_id": challenger_id,
+                       "role": player_roles[challenger_id]},
+        "challenger_team": opponents,
+    }
   else:  # Foul
-    facts = {"offender": details["offender"], "offender_team": opponents,
-             "card": details["card_issued"],
-             "second_yellow": details["second_yellow"]}
+    offender_id = ev["offender_id"]
+    facts = {
+        "offender": {"player_id": offender_id, "role": player_roles[offender_id]},
+        "offender_team": opponents,
+        "card": details["card_issued"],
+        "second_yellow": details["second_yellow"],
+    }
   change = packet["possession_change"]
   score = f"{home['team']} {home['score']} - {away['score']} {away['team']}"
   data = {
@@ -67,8 +78,8 @@ def build_input(packet, reason=None):
       "event_type": kind,
       "outcome": details.get("outcome"),
       "restart": ev.get("restart"),
-      "actor": ev["actor"]["name"],
-      "actor_role": ev["actor"]["role"],
+      "actor": {"player_id": ev["actor"]["id"],
+                "role": ev["actor"]["role"]},
       "actor_team": ev["team"],
       "opponents": opponents,
       # After a shot the ball goes to the restart, which is not a turnover
@@ -108,7 +119,7 @@ def render_text(fields):
     headline += "."
   text = f"{headline} {fields['casual']}"
   if fields["why_it_matters"]:
-    text += f" Why it matters: {fields['why_it_matters']}"
+    text += f"\nWhy it matters: {fields['why_it_matters']}"
   if fields["eli5_term"] and fields["eli5_definition"]:
     text += f"\n{fields['eli5_term']}: {fields['eli5_definition']}"
   return text

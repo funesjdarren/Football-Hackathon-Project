@@ -56,6 +56,8 @@ def test_build_input_states_the_facts(seed):
       continue
     data = cio.build_input(p, "reason")
     assert data["actor_team"] == ev["team"]
+    assert data["actor"] == {
+        "player_id": ev["actor"]["id"], "role": ev["actor"]["role"]}
     assert {data["actor_team"], data["opponents"]} == {home, away}
     assert data["score_after"] == (
         f"{home} {board['home']['score']} - {board['away']['score']} {away}")
@@ -66,6 +68,20 @@ def test_build_input_states_the_facts(seed):
       assert ev["type"] != "Shot" and data["ball_won_by"] == data["opponents"]
     for key in ("challenger_team", "offender_team"):
       assert data["details"].get(key, data["opponents"]) == data["opponents"]
+    if ev["type"] == "Tackle":
+      challenger_id = ev["challenger_id"]
+      roles = {player["player_id"]: player["role"]
+               for player in p["player_tracking"]["players"]}
+      assert data["details"]["challenger"] == {
+          "player_id": challenger_id, "role": roles[challenger_id]}
+    elif ev["type"] == "Foul":
+      offender_id = ev["offender_id"]
+      roles = {player["player_id"]: player["role"]
+               for player in p["player_tracking"]["players"]}
+      assert data["details"]["offender"] == {
+          "player_id": offender_id, "role": roles[offender_id]}
+    for player in p["player_tracking"]["players"]:
+      assert player["name"] not in text
     if ev["type"] == "Shot":
       shooters.add(data["actor_team"])
       # measured to the goal the shooter attacks: never from their own half

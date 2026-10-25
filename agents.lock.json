@@ -5,8 +5,8 @@
     "version": "1"
   },
   "MS-Football-Hackathon-Play-by-Play": {
-    "definition_sha256": "32fbee4fdc6011aa2b80e8805ef8cfa2b339c4d309daee288ad4ba2d1bb0feab",
+    "definition_sha256": "b6b95403ae430f85640748e6c152b26b01c3c6ff2bf0d6704da73f1f8e1d89f1",
     "model": "gpt-6-luna",
-    "version": "2"
+    "version": "4"
   }
 }

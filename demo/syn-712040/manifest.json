@@ -1,0 +1,23 @@
+{
+  "match_id": "syn-712040",
+  "recorded_at": "2026-10-25T21:14:38.954966+00:00",
+  "files": {
+    "match_data.jsonl": 1476,
+    "commentary.jsonl": 228,
+    "state_of_game.jsonl": 7,
+    "fan_voice.jsonl": 61,
+    "fan_voice_state.jsonl": 7
+  },
+  "agents": {
+    "MS-Football-Hackathon-Fan-Voice": {
+      "definition_sha256": "745369c5f5ba419a326c2d5e2faf99f2f4936beba05a1b5446b09bbc1e969246",
+      "model": "gpt-6-luna",
+      "version": "1"
+    },
+    "MS-Football-Hackathon-Play-by-Play": {
+      "definition_sha256": "b6b95403ae430f85640748e6c152b26b01c3c6ff2bf0d6704da73f1f8e1d89f1",
+      "model": "gpt-6-luna",
+      "version": "4"
+    }
+  }
+}
