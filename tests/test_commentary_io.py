@@ -1,4 +1,4 @@
-"""Optional checks for the play-by-play v2 reply format. Safe to delete.
+"""Optional checks for the play-by-play v2 input and reply format. Safe to delete.
 
 Run from the repo root (writes only to pytest's temp folder, no network):
   python -B -m pytest -p no:cacheprovider tests/test_commentary_io.py -q
@@ -35,6 +35,55 @@ def gui_line(line):
   """What match_gui.py does with each commentary line (it reads only these keys)."""
   entry = json.loads(line)
   return f"\n[{entry['clock']}] {entry['text']}\n"
+
+
+DETAIL_KEYS = {
+    "Shot": {"distance_to_goal_m", "xG", "shot_speed_kmh"},
+    "Pass": {"length_m", "pass_speed_kmh"},
+    "Dribble": {"kept_the_ball", "carried_m"},
+    "Tackle": {"challenger", "challenger_team"},
+    "Foul": {"offender", "offender_team", "card", "second_yellow"},
+}
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_build_input_states_the_facts(seed):
+  home, away = g.SYNTHETIC_TEAMS
+  shooters = set()
+  for p in g.simulate(random.Random(seed)):
+    ev, board = p["event"], p["broadcast_metadata"]["scoreboard"]
+    if ev["type"] in g.MARKER_TYPES:
+      continue
+    data = cio.build_input(p, "reason")
+    assert data["actor_team"] == ev["team"]
+    assert {data["actor_team"], data["opponents"]} == {home, away}
+    assert data["score_after"] == (
+        f"{home} {board['home']['score']} - {board['away']['score']} {away}")
+    assert set(data["details"]) == DETAIL_KEYS[ev["type"]]
+    text = json.dumps(data)
+    assert "coordinates" not in text and "spatial" not in text
+    if "ball_won_by" in data:  # only real turnovers, always to the opponents
+      assert ev["type"] != "Shot" and data["ball_won_by"] == data["opponents"]
+    for key in ("challenger_team", "offender_team"):
+      assert data["details"].get(key, data["opponents"]) == data["opponents"]
+    if ev["type"] == "Shot":
+      shooters.add(data["actor_team"])
+      # measured to the goal the shooter attacks: never from their own half
+      assert data["details"]["distance_to_goal_m"] <= g.SHOT_MAX_DIST_M + 0.5
+  assert shooters == {home, away}
+
+
+def test_build_input_turnovers_name_the_winner():
+  kinds = set()
+  for p in g.simulate(random.Random(3)):
+    ev, change = p["event"], p["possession_change"]
+    if ev["type"] in g.MARKER_TYPES or ev["type"] == "Shot":
+      continue
+    data = cio.build_input(p)
+    assert ("ball_won_by" in data) == change["changed"]
+    if change["changed"]:
+      kinds.add(ev["type"])
+  assert kinds == {"Pass", "Dribble", "Tackle"}
 
 
 def test_schema_is_strict():

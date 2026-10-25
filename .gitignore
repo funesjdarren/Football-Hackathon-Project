@@ -4,3 +4,6 @@ __pycache__/
 football_data/*.jsonl
 football_data/*.json
 scripts/football_data/
+football_data/logs/
+football_data/archive/
+football_data/fan_voice_wanted

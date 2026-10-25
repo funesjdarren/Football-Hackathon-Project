@@ -7,10 +7,18 @@ from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
+import commentary_io
+import foundry_client
+
 # Load environment variables
 load_dotenv()
 project_endpoint = os.getenv("PROJECT_ENDPOINT")
 agent_name = os.getenv("AGENT_NAME")
+# The play-by-play v2 agent (JSON replies), pinned by agents.lock.json. An empty
+# PLAY_BY_PLAY_AGENT_NAME= line in .env switches back to the v1 agent (AGENT_NAME)
+play_by_play_name = os.getenv(
+    "PLAY_BY_PLAY_AGENT_NAME", "MS-Football-Hackathon-Play-by-Play"
+)
 
 if not project_endpoint or not agent_name:
   raise ValueError("PROJECT_ENDPOINT and AGENT_NAME must be set in .env file")
@@ -23,7 +31,8 @@ credential = DefaultAzureCredential(
 project_client = AIProjectClient(
     credential=credential, endpoint=project_endpoint
 )
-openai_client = project_client.get_openai_client()
+# A slow agent call can't stall the match for minutes
+openai_client = project_client.get_openai_client(timeout=30, max_retries=1)
 agent = project_client.agents.get(agent_name=agent_name)
 
 
@@ -238,14 +247,19 @@ def main():
     }
 
     try:
-      commentary = send_to_agent(commentary_input)
-      print(f"COMMENTARY:\n{commentary}\n", flush=True)
-      # --- WRITE TO GUI FEED ---
-      comm_path = os.path.join("football_data", "commentary.jsonl")
-      with open(comm_path, "a") as cf:
-        cf.write(
-            json.dumps({"clock": clock, "text": commentary.strip()}) + "\n"
-        )
+      if play_by_play_name:
+        reference = foundry_client.agent_reference(play_by_play_name)
+        v2_input = commentary_io.build_input(packet, reason)
+        reply = foundry_client.ask(openai_client, reference, v2_input)
+      else:
+        reference = {"name": agent.name}
+        reply = send_to_agent(commentary_input)
+      # Written to football_data/ from any folder, before printing
+      row = commentary_io.write_row(
+          packet, reply, reason, reference["name"], reference.get("version")
+      )
+      if row:
+        print(f"COMMENTARY:\n{row['text']}\n", flush=True)
     except Exception as exc:
       print(f"Agent call failed: {exc!r}", file=sys.stderr)
 

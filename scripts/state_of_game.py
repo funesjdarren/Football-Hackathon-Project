@@ -541,7 +541,8 @@ def publish(tracker, take, ask):
     if not take.get("previous_match"):
       tracker.previous_take = text
 
-  entry = {"clock": take["clock"], "text": text, "label": take["label"], "next": take["next"]}
+  entry = {"clock": take["clock"], "text": text, "label": take["label"], "next": take["next"],
+           "written_at": datetime.now(timezone.utc).isoformat()}  # replays keep timing
   os.makedirs(paths.DATA_DIR, exist_ok=True)
   with open(STATE_PATH, "a") as f:
     f.write(json.dumps(entry) + "\n")

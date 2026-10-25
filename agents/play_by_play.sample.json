@@ -1,0 +1,27 @@
+{
+  "clock": "16:42",
+  "trigger": "KEY EVENT: GOAL_SCORED",
+  "event_type": "Shot",
+  "outcome": "Goal",
+  "actor": "E. Garrow",
+  "actor_role": "Forward",
+  "actor_team": "FC Alpha",
+  "opponents": "Beta United",
+  "score_after": "FC Alpha 1 - 0 Beta United",
+  "phase_of_play": "Final Third Attack",
+  "opponents_shape": {
+    "structure": "Low Block (Deep Defense)",
+    "back_line_from_own_goal_m": 9.3,
+    "nearest_opponent_m": 3.8
+  },
+  "actor_speed_kmh": 23.0,
+  "details": {
+    "distance_to_goal_m": 13.3,
+    "xG": 0.13,
+    "shot_speed_kmh": 107.8
+  },
+  "possession_share": {
+    "FC Alpha": 54,
+    "Beta United": 46
+  }
+}

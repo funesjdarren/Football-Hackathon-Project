@@ -29,8 +29,9 @@ FALLBACK_DEFINITION = {
     "model": "gpt-6-luna",
     "reasoning": {"effort": "low"},
 }
-# The teams are fictional, so web search could only bring in wrong facts
-NOT_COPIED = ("instructions", "tools", "tool_choice")
+# The teams are fictional, so web search could only bring in wrong facts; a JSON
+# output format belongs to the agent that defines it
+NOT_COPIED = ("instructions", "tools", "tool_choice", "text", "structured_inputs")
 
 # Foundry rule: alphanumeric ends, hyphens inside, at most 63 characters
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")

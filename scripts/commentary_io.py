@@ -1,17 +1,20 @@
-"""Play-by-play v2: the reply schema and the commentary feed rows.
+"""Play-by-play v2: the agent's input, its reply schema and the feed rows.
 
-The agent answers with the JSON fields in FIELDS. to_row turns a reply into one
-line of football_data/commentary.jsonl that today's GUI can still show (it reads
-only "clock" and "text"); the other fields are for personalised views. Standard
-library only, so it is safe to import anywhere.
+build_input states the facts of one moment and the agent answers with FIELDS.
+to_row turns a reply into a commentary.jsonl line the GUI shows from "clock"
+and "text"; the other fields feed personalised views. Standard library only,
+so it is safe to import anywhere.
 """
 import json
+import math
 import os
 from datetime import datetime, timezone
 
 import paths
 
 COMMENTARY_PATH = os.path.join(paths.DATA_DIR, "commentary.jsonl")
+# The goal line each team attacks, by team_id (teams never switch ends)
+GOAL_X = {"FCA": 120.0, "BTU": 0.0}
 FIELDS = (
     "headline", "casual", "analyst", "why_it_matters", "eli5_term", "eli5_definition"
 )
@@ -25,15 +28,74 @@ SCHEMA = {
 }
 
 
+def metres(a, b):
+  return round(math.hypot(a[0] - b[0], a[1] - b[1]), 1)
+
+
+def build_input(packet, reason=None):
+  """The play-by-play agent's input for one moment, with nothing left to infer.
+
+  It names the actor's team, gives the score after the moment and replaces raw
+  pitch coordinates with distances. Keys without a value are left out.
+  """
+  meta, tactics = packet["broadcast_metadata"], packet["tactical_context"]
+  ev, details = packet["event"], packet["event"]["details"]
+  home, away = meta["scoreboard"]["home"], meta["scoreboard"]["away"]
+  opponents = away["team"] if ev["team"] == home["team"] else home["team"]
+  start, end = details["coordinates"]["start"], details["coordinates"].get("end")
+  kind = ev["type"]
+  if kind == "Shot":
+    goal = (GOAL_X[ev["team_id"]], 40.0)
+    facts = {"distance_to_goal_m": metres(start, goal), "xG": details["xG"],
+             "shot_speed_kmh": details["shot_speed_kmh"]}
+  elif kind == "Pass":
+    facts = {"length_m": metres(start, end),
+             "pass_speed_kmh": details["pass_speed_kmh"]}
+  elif kind == "Dribble":
+    facts = {"kept_the_ball": details["success"], "carried_m": metres(start, end)}
+  elif kind == "Tackle":
+    facts = {"challenger": details["challenger"], "challenger_team": opponents}
+  else:  # Foul
+    facts = {"offender": details["offender"], "offender_team": opponents,
+             "card": details["card_issued"],
+             "second_yellow": details["second_yellow"]}
+  change = packet["possession_change"]
+  score = f"{home['team']} {home['score']} - {away['score']} {away['team']}"
+  data = {
+      "clock": meta["clock"]["display_time"],
+      "trigger": reason,
+      "event_type": kind,
+      "outcome": details.get("outcome"),
+      "restart": ev.get("restart"),
+      "actor": ev["actor"]["name"],
+      "actor_role": ev["actor"]["role"],
+      "actor_team": ev["team"],
+      "opponents": opponents,
+      # After a shot the ball goes to the restart, which is not a turnover
+      "ball_won_by": change["to_team"] if change["changed"] and kind != "Shot"
+                     else None,
+      "score_after": score,
+      "phase_of_play": tactics["phase_of_play"],
+      "opponents_shape": {
+          "structure": tactics["defensive_structure"],
+          "back_line_from_own_goal_m": tactics["defensive_line_height_meters"],
+          "nearest_opponent_m": tactics["pressure_distance_to_ball_meters"],
+      },
+      "actor_speed_kmh": ev["actor_speed_kmh"],
+      "details": facts,
+      "possession_share": packet["live_match_stats"]["possession_pct"],
+  }
+  return {k: v for k, v in data.items() if v is not None}
+
+
 def parse_reply(reply):
   """The reply's fields as stripped strings, or None if it isn't a v2 reply."""
   try:
     data = json.loads(reply)
   except ValueError:
     return None
-  if not isinstance(data, dict):
-    return None
-  if not all(isinstance(data.get(name), str) for name in FIELDS):
+  if not (isinstance(data, dict)
+          and all(isinstance(data.get(name), str) for name in FIELDS)):
     return None
   fields = {name: data[name].strip() for name in FIELDS}
   return fields if fields["headline"] and fields["casual"] else None
@@ -77,6 +139,29 @@ def to_row(packet, reply, reason=None, agent_name=None, agent_version=None):
       "agent_version": agent_version,
       "written_at": datetime.now(timezone.utc).isoformat(),
   }
+
+
+def read_rows(path, pos):
+  """JSON rows added after byte offset pos, and the new offset.
+
+  A half-written last line waits for the next call; lines that are not JSON
+  objects are skipped.
+  """
+  if not os.path.exists(path):
+    return [], pos
+  with open(path, "rb") as f:
+    f.seek(pos)
+    data = f.read()
+  cut = data.rfind(b"\n") + 1
+  rows = []
+  for line in data[:cut].decode("utf-8", "replace").splitlines():
+    try:
+      row = json.loads(line)
+    except ValueError:
+      continue
+    if isinstance(row, dict):
+      rows.append(row)
+  return rows, pos + cut
 
 
 def append_row(row, path):

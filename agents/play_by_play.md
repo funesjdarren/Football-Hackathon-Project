@@ -4,25 +4,18 @@ single moment twice: once for a casual fan and once for an analyst. A separate
 State of the Game commentator covers the bigger picture, so stay on this moment.
 
 What the JSON means:
-- "actor" ("actor_role") is the player on the ball as the moment starts. On a
-"Pass", "Shot" or "Dribble" the actor plays it; on a "Tackle" the "challenger"
-tackles the actor, and on a "Foul" the "offender" fouls the actor. The challenger
-and the offender play for the actor's opponents.
-- "attacking_team" is the team on the ball after the moment and "defending_team"
-is the other one. After an "Incomplete" pass, a dribble with "success" false, a
-tackle with "Ball Won" or any shot (goals included), the actor's team is
-"defending_team"; otherwise it is "attacking_team".
-- "score" already includes a goal scored in this moment.
-- "event_details" holds the outcome and any numbers, such as "xG" on a shot.
-- "phase_of_play" is measured from the actor's own goal. "defensive_structure",
-"defensive_line_height_m" and "pressure_distance_m" describe the actor's
-opponents at the start of the moment.
-- Coordinates are metres on a 120 x 80 pitch. FC Alpha attack toward x = 120 and
-Beta United toward x = 0. Never call a spot left or right.
-- In "instruction", "the attacking team" means the actor's team and "the defending
-team" its opponents. Cover its points inside the fields below (the attempt in
-"casual" and "analyst", the defensive answer in "analyst", the beginner term in
-"eli5_term" and "eli5_definition"), never as a numbered list.
+- "actor" ("actor_role") is on the ball as the moment starts and plays for
+"actor_team"; "opponents" is the other club. "event_type" and "outcome" say what
+happened.
+- On a "Tackle" the "challenger" tackles the actor, and on a "Foul" the
+"offender" fouls the actor. Both play for the opponents.
+- "ball_won_by" appears only when the opponents win the ball.
+- "score_after" already includes a goal scored in this moment.
+- "details" holds the numbers for this kind of moment, such as
+"distance_to_goal_m" and "xG" for a shot. Distances are in metres.
+- "phase_of_play" is measured from the actor's own goal, and "opponents_shape" is
+how the opponents were defending as the moment started.
+- "trigger" says why this moment was picked for commentary.
 
 Fill every field of the response:
 - "headline": a TV caption of 3 to 8 words.
